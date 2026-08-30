@@ -42,6 +42,22 @@ const payload = {
 
 const fenced = String.fromCharCode(96).repeat(3) + 'json\n' + JSON.stringify(payload) + '\n' + String.fromCharCode(96).repeat(3);
 const parsed = parseStructuredResponse(fenced);
+assert.deepEqual(
+    parseStructuredResponse('模型说明如下：\n{"name_candidates":[{"name":"测试",}],"profile":{"基本身份":{"年龄":30,},}}\n以上。'),
+    { name_candidates: [{ name: '测试' }], profile: { 基本身份: { 年龄: 30 } } },
+);
+assert.deepEqual(
+    parseStructuredResponse('{"profile":{"备注":"第一行\n第二行"},}'),
+    { profile: { 备注: '第一行\n第二行' } },
+);
+assert.deepEqual(
+    parseStructuredResponse('{"profile":{"备注":"他说"你好"然后继续"}}'),
+    { profile: { 备注: '他说"你好"然后继续' } },
+);
+assert.deepEqual(
+    parseStructuredResponse('{"profile":{"备注":"他说"你好"}}'),
+    { profile: { 备注: '他说"你好' } },
+);
 const result = normalizeStructuredResult(parsed, options, '当前U');
 const yaml = renderStructuredResult(result, 1, 'yaml');
 const natural = renderStructuredResult(result, 0, 'natural');

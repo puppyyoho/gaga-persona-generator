@@ -286,6 +286,11 @@ function extractJsonText(raw) {
         JSON.parse(unfenced);
         return unfenced;
     } catch {
+        const extracted = findBalancedJson(unfenced);
+        if (extracted) return extracted;
+        // If malformed prose contains an unmatched quote, the balanced
+        // scanner may not be able to finish. Keep a conservative first/last
+        // object fallback so the syntax-repair pass still gets a chance.
         const start = unfenced.indexOf('{');
         const end = unfenced.lastIndexOf('}');
         if (start >= 0 && end > start) return unfenced.slice(start, end + 1);
@@ -293,17 +298,147 @@ function extractJsonText(raw) {
     }
 }
 
+function findBalancedJson(text) {
+    let start = -1;
+    const stack = [];
+    let inString = false;
+    let escaped = false;
+
+    for (let index = 0; index < text.length; index += 1) {
+        const char = text[index];
+        if (start < 0) {
+            if (char === '{' || char === '[') {
+                start = index;
+                stack.push(char);
+            }
+            continue;
+        }
+
+        if (inString) {
+            if (escaped) escaped = false;
+            else if (char === '\\') escaped = true;
+            else if (char === '"') inString = false;
+            continue;
+        }
+        if (char === '"') {
+            inString = true;
+            continue;
+        }
+        if (char === '{' || char === '[') {
+            stack.push(char);
+            continue;
+        }
+        if (char !== '}' && char !== ']') continue;
+
+        const expected = char === '}' ? '{' : '[';
+        if (stack[stack.length - 1] !== expected) return null;
+        stack.pop();
+        if (!stack.length) return text.slice(start, index + 1);
+    }
+
+    return null;
+}
+
+function removeTrailingCommas(text) {
+    let output = '';
+    let inString = false;
+    let escaped = false;
+
+    for (let index = 0; index < text.length; index += 1) {
+        const char = text[index];
+        if (inString) {
+            output += char;
+            if (escaped) escaped = false;
+            else if (char === '\\') escaped = true;
+            else if (char === '"') inString = false;
+            continue;
+        }
+        if (char === '"') {
+            inString = true;
+            output += char;
+            continue;
+        }
+        if (char === ',') {
+            let next = index + 1;
+            while (/\s/.test(text[next] || '')) next += 1;
+            if (text[next] === '}' || text[next] === ']') continue;
+        }
+        output += char;
+    }
+    return output;
+}
+
+function repairJsonStringSyntax(text) {
+    let output = '';
+    let inString = false;
+    let escaped = false;
+
+    for (let index = 0; index < text.length; index += 1) {
+        const char = text[index];
+        if (!inString) {
+            output += char;
+            if (char === '"') inString = true;
+            continue;
+        }
+        if (escaped) {
+            output += char;
+            escaped = false;
+            continue;
+        }
+        if (char === '\\') {
+            output += char;
+            escaped = true;
+            continue;
+        }
+        if (char === '"') {
+            let next = index + 1;
+            while (/\s/.test(text[next] || '')) next += 1;
+            // Models occasionally put an unescaped quote in prose. A quote
+            // followed by JSON punctuation is a real string terminator;
+            // otherwise preserve the prose by escaping it.
+            if (next >= text.length || ',}]:'.includes(text[next])) {
+                output += char;
+                inString = false;
+            } else {
+                output += '\\"';
+            }
+            continue;
+        }
+        const code = char.charCodeAt(0);
+        if (code < 0x20) {
+            output += code === 0x0a ? '\\n'
+                : code === 0x0d ? '\\r'
+                    : code === 0x09 ? '\\t' : `\\u${code.toString(16).padStart(4, '0')}`;
+        } else {
+            output += char;
+        }
+    }
+    return output;
+}
+
 export function parseStructuredResponse(raw) {
     const jsonText = extractJsonText(raw);
-    try {
-        const parsed = JSON.parse(jsonText);
-        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-            throw new Error('顶层结果不是对象。');
+    let lastError;
+    const repairedStrings = repairJsonStringSyntax(jsonText);
+    const candidates = [
+        jsonText,
+        removeTrailingCommas(jsonText),
+        repairedStrings,
+        repairJsonStringSyntax(removeTrailingCommas(jsonText)),
+        removeTrailingCommas(repairedStrings),
+    ];
+    for (const candidate of candidates) {
+        try {
+            const parsed = JSON.parse(candidate);
+            if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+                throw new Error('顶层结果不是对象。');
+            }
+            return parsed;
+        } catch (error) {
+            lastError = error;
         }
-        return parsed;
-    } catch (error) {
-        throw new Error('结构化结果解析失败：' + error.message);
     }
+    throw new Error('结构化结果解析失败：' + lastError.message);
 }
 
 function normalizeCandidate(candidate) {
