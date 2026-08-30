@@ -64,7 +64,7 @@
 
 推荐在 SillyTavern 的 Extensions 面板中选择“安装扩展”，粘贴仓库地址：
 
-    https://github.com/puppyyoho/gaga-persona-generato.git
+    https://github.com/puppyyoho/gaga-persona-generator.git
 
 也可以把整个文件夹放到当前用户扩展目录：
 

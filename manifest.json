@@ -7,7 +7,7 @@
   "css": "style.css",
   "author": "Persona Forge",
   "version": "0.2.4",
-  "homePage": "https://github.com/puppyyoho/gaga-persona-generato",
+  "homePage": "https://github.com/puppyyoho/gaga-persona-generator",
   "auto_update": false,
   "minimum_client_version": "1.18.0"
 }
