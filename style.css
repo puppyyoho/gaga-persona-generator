@@ -712,12 +712,19 @@ html.pf-modal-open body {
 
 .pf-primary-button,
 .pf-secondary-button {
+    min-width: 0;
     min-height: 48px;
     border-radius: 12px;
     padding: 10px 14px;
     font-weight: 800;
     cursor: pointer;
     touch-action: manipulation;
+}
+
+.pf-primary-button {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .pf-primary-button {
