@@ -360,6 +360,100 @@ html.pf-modal-open body {
     background: color-mix(in srgb, var(--pf-accent) 16%, transparent);
 }
 
+.pf-summary-toggle {
+    display: flex;
+    align-items: flex-start;
+    gap: 9px;
+    margin-top: 12px;
+    padding: 10px 11px;
+    border: 1px solid var(--pf-border);
+    border-radius: 11px;
+    background: color-mix(in srgb, var(--pf-bg) 55%, transparent);
+    color: var(--pf-text);
+    cursor: pointer;
+}
+
+.pf-summary-toggle input {
+    width: 17px;
+    height: 17px;
+    flex: 0 0 auto;
+    margin: 2px 0 0;
+    accent-color: var(--pf-accent);
+}
+
+.pf-summary-toggle span {
+    display: grid;
+    gap: 3px;
+    min-width: 0;
+}
+
+.pf-summary-toggle strong {
+    font-size: 13px;
+}
+
+.pf-summary-toggle small {
+    color: var(--pf-muted);
+    font-size: 12px;
+    font-weight: 500;
+    line-height: 1.45;
+}
+
+.pf-summary-card {
+    padding: 0;
+    overflow: hidden;
+    border-color: color-mix(in srgb, var(--pf-accent) 28%, var(--pf-border));
+    background: color-mix(in srgb, var(--pf-accent) 5%, var(--pf-card));
+}
+
+.pf-summary-card summary {
+    min-height: 44px;
+    padding: 10px 12px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    cursor: pointer;
+    user-select: none;
+    touch-action: manipulation;
+    font-weight: 750;
+}
+
+.pf-summary-card summary small {
+    color: var(--pf-muted);
+    font-size: 11px;
+    font-weight: 500;
+}
+
+.pf-summary-body {
+    display: grid;
+    gap: 10px;
+    padding: 0 12px 12px;
+    border-top: 1px solid var(--pf-border);
+}
+
+.pf-summary-row {
+    display: grid;
+    gap: 3px;
+    padding-top: 10px;
+}
+
+.pf-summary-row strong {
+    color: var(--pf-accent);
+    font-size: 12px;
+}
+
+.pf-summary-row p,
+.pf-summary-row ul {
+    margin: 0;
+    color: var(--pf-text);
+    font-size: 12.5px;
+    line-height: 1.6;
+}
+
+.pf-summary-row ul {
+    padding-left: 18px;
+}
+
 .pf-details summary {
     min-height: 52px;
     padding: 13px 15px;
