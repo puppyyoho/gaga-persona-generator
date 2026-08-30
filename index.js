@@ -18,7 +18,7 @@ import {
 const EXTENSION_NAME = 'persona-forge';
 const DISPLAY_NAME = '嘎嘎人设生成器';
 const SETTINGS_KEY = 'personaForge';
-const VERSION = '0.2.7';
+const VERSION = '0.3.0';
 const MAX_LORE_CHARS_DEFAULT = 52000;
 
 const state = {
@@ -363,7 +363,7 @@ function createStaticUi() {
                         <input id="pf-stream-output" type="checkbox">
                         <span>
                             <strong>实时显示生成过程</strong>
-                            <small>当前 API 或连接管理器支持时会边生成边显示；不支持流式接口时自动回退为普通生成。</small>
+                            <small>Chat/Text Completion 或连接管理器支持时会边生成边显示，并显示实时字数与分片数；失败时会说明原因后回退。</small>
                         </span>
                     </label>
                     <button type="button" class="pf-content-jump" id="pf-jump-content">↓ 选择生成内容（可勾选）</button>
@@ -432,7 +432,7 @@ function createStaticUi() {
                     <div class="pf-section-head pf-result-head">
                         <div>
                             <h3>生成结果</h3>
-                            <p id="pf-result-meta">生成完成后可直接一键复制。</p>
+                            <p id="pf-result-meta" aria-live="polite">生成完成后可直接一键复制。</p>
                         </div>
                         <button type="button" class="pf-copy-button" id="pf-copy" disabled>⧉ 一键复制</button>
                     </div>
@@ -451,7 +451,7 @@ function createStaticUi() {
                         </div>
                     </div>
                     <div class="pf-empty" id="pf-empty">还没有生成内容。</div>
-                    <pre class="pf-result" id="pf-result" tabindex="0" hidden></pre>
+                    <pre class="pf-result" id="pf-result" tabindex="0" aria-live="off" hidden></pre>
                 </section>
             </div>
 
@@ -1260,15 +1260,25 @@ function getConnectionManagerStreaming(ctx) {
     const profileId = connectionManager?.selectedProfile;
     const profiles = Array.isArray(connectionManager?.profiles) ? connectionManager.profiles : [];
     if (disabled || typeof service?.sendRequest !== 'function' || !profileId) return null;
-    if (!profiles.some(profile => profile?.id === profileId)) return null;
-    return { service, profileId };
+    const profile = profiles.find(item => item?.id === profileId);
+    if (!profile) return null;
+    try {
+        if (typeof service.isProfileSupported === 'function' && !service.isProfileSupported(profile)) return null;
+    } catch (error) {
+        console.warn(`[${DISPLAY_NAME}] Could not validate the selected connection profile.`, error);
+        return null;
+    }
+    return {
+        service,
+        profileId,
+        label: profile.name || profile.model || '连接管理器',
+    };
 }
 
 function getCurrentApiStreaming(ctx) {
     const mainApi = String(ctx?.mainApi || '').toLowerCase();
-    const isTextApi = Boolean(mainApi) && mainApi !== 'openai';
     const chatService = ctx?.ChatCompletionService;
-    if (!isTextApi
+    if (mainApi === 'openai'
         && typeof chatService?.presetToGeneratePayload === 'function'
         && typeof chatService?.sendRequest === 'function'
         && ctx?.chatCompletionSettings) {
@@ -1276,11 +1286,12 @@ function getCurrentApiStreaming(ctx) {
             api: 'chat',
             service: chatService,
             settings: ctx.chatCompletionSettings,
+            label: '当前 Chat Completion',
         };
     }
 
     const textService = ctx?.TextCompletionService;
-    if (isTextApi
+    if (mainApi === 'textgenerationwebui'
         && typeof textService?.presetToGeneratePayload === 'function'
         && typeof textService?.sendRequest === 'function'
         && ctx?.textCompletionSettings) {
@@ -1288,6 +1299,7 @@ function getCurrentApiStreaming(ctx) {
             api: 'text',
             service: textService,
             settings: ctx.textCompletionSettings,
+            label: '当前 Text Completion',
         };
     }
 
@@ -1316,13 +1328,31 @@ function mergeStreamText(previous, next) {
     return previous + value;
 }
 
-async function generateRawWithStreaming(ctx, { systemPrompt, prompt, maxTokens, onChunk }) {
+function waitForBrowserPaint() {
+    return new Promise(resolve => {
+        if (typeof requestAnimationFrame === 'function') {
+            requestAnimationFrame(() => resolve());
+        } else {
+            setTimeout(resolve, 0);
+        }
+    });
+}
+
+function readableError(error) {
+    const cause = error?.cause;
+    return String(cause?.message || error?.message || error || '未知错误');
+}
+
+async function generateRawWithStreaming(ctx, { systemPrompt, prompt, maxTokens, onStatus, onChunk }) {
     const connection = getConnectionManagerStreaming(ctx);
     const currentApi = connection ? null : getCurrentApiStreaming(ctx);
     if (!connection && !currentApi) return { supported: false, streamed: false, text: '' };
 
     const controller = new AbortController();
     state.streamAbortController = controller;
+    const source = connection?.label || currentApi?.label || '当前连接';
+    const startedAt = performance.now();
+    onStatus?.({ phase: 'connecting', source, eventCount: 0, textLength: 0 });
     try {
         const effectiveMaxTokens = Math.max(512, Math.ceil((Number(maxTokens) || 1000) * 1.35));
         let response;
@@ -1351,7 +1381,7 @@ async function generateRawWithStreaming(ctx, { systemPrompt, prompt, maxTokens, 
                 ...(systemPrompt ? [{ role: 'system', content: systemPrompt }] : []),
                 { role: 'user', content: prompt },
             ];
-            const overridePayload = { messages, stream: true };
+            const overridePayload = { messages, max_tokens: effectiveMaxTokens, stream: true };
             const payload = await currentApi.service.presetToGeneratePayload(
                 settings,
                 {},
@@ -1374,26 +1404,39 @@ async function generateRawWithStreaming(ctx, { systemPrompt, prompt, maxTokens, 
             response = await currentApi.service.sendRequest(payload, true, controller.signal);
         }
 
+        const generator = typeof response === 'function'
+            ? response()
+            : (response && typeof response[Symbol.asyncIterator] === 'function' ? response : null);
+
         let text = '';
-        let streamed = false;
-        if (typeof response === 'function') {
-            streamed = true;
-            const generator = response();
+        let eventCount = 0;
+        let updateCount = 0;
+        let firstChunkMs = null;
+        if (generator) {
+            onStatus?.({ phase: 'connected', source, eventCount: 0, textLength: 0 });
             for await (const chunk of generator) {
+                eventCount += 1;
                 const chunkText = typeof chunk === 'string'
                     ? chunk
                     : (chunk?.text ?? chunk?.content ?? '');
-                text = mergeStreamText(text, chunkText);
-                if (text) onChunk?.(text);
-            }
-        } else if (response && typeof response[Symbol.asyncIterator] === 'function') {
-            streamed = true;
-            for await (const chunk of response) {
-                const chunkText = typeof chunk === 'string'
-                    ? chunk
-                    : (chunk?.text ?? chunk?.content ?? '');
-                text = mergeStreamText(text, chunkText);
-                if (text) onChunk?.(text);
+                const nextText = mergeStreamText(text, chunkText);
+                if (nextText !== text) {
+                    text = nextText;
+                    updateCount += 1;
+                    firstChunkMs ??= Math.round(performance.now() - startedAt);
+                    onChunk?.(text, {
+                        phase: 'receiving',
+                        source,
+                        eventCount,
+                        updateCount,
+                        textLength: text.length,
+                        firstChunkMs,
+                    });
+                }
+
+                // Some reverse proxies buffer several SSE events and release them in one burst.
+                // Yield a frame regularly so the browser can still paint received events progressively.
+                if (eventCount === 1 || eventCount % 8 === 0) await waitForBrowserPaint();
             }
         } else {
             text = typeof response === 'string'
@@ -1401,7 +1444,19 @@ async function generateRawWithStreaming(ctx, { systemPrompt, prompt, maxTokens, 
                 : (response?.content ?? response?.text ?? '');
         }
         if (!String(text).trim()) throw new Error('流式接口返回了空内容');
-        return { supported: true, streamed, text: String(text) };
+        const elapsedMs = Math.round(performance.now() - startedAt);
+        const streamed = Boolean(generator && updateCount > 1);
+        return {
+            supported: true,
+            streamed,
+            text: String(text),
+            source,
+            eventCount,
+            updateCount,
+            firstChunkMs,
+            elapsedMs,
+            buffered: Boolean((generator && updateCount <= 1) || (!generator && text)),
+        };
     } finally {
         if (state.streamAbortController === controller) state.streamAbortController = null;
     }
@@ -1434,20 +1489,32 @@ async function generatePersona() {
         let resultText = '';
         let streamState = { supported: false, streamed: false, text: '' };
         if (options.streamOutput) {
-            setStreamingPreview('');
+            setStreamingPreview('', { phase: 'preparing' });
+            scrollStreamingResultIntoView();
+            await waitForBrowserPaint();
             try {
                 streamState = await generateRawWithStreaming(ctx, {
                     systemPrompt,
                     prompt,
                     maxTokens: options.targetLength,
-                    onChunk: text => {
-                        if (generationId === state.generationEpoch) setStreamingPreview(text);
+                    onStatus: info => {
+                        if (generationId === state.generationEpoch) setStreamingPreview('', info);
+                    },
+                    onChunk: (text, info) => {
+                        if (generationId === state.generationEpoch) setStreamingPreview(text, info);
                     },
                 });
+                if (!streamState.supported) {
+                    setStreamingFallbackPreview('当前 API 类型没有可供扩展调用的独立流式接口');
+                    await waitForBrowserPaint();
+                }
             } catch (error) {
                 if (generationId !== state.generationEpoch) return;
                 console.warn(`[${DISPLAY_NAME}] Streaming generation failed; falling back to normal generation.`, error);
-                streamState = { supported: true, streamed: false, text: '', fallback: true };
+                const fallbackReason = readableError(error);
+                streamState = { supported: true, streamed: false, text: '', fallback: true, fallbackReason };
+                setStreamingFallbackPreview(fallbackReason);
+                await waitForBrowserPaint();
             }
         }
         if (streamState.text) {
@@ -1481,10 +1548,14 @@ async function generatePersona() {
         settings.streamOutput = options.streamOutput;
         settings.sectionSelection = getCurrentSectionSelection();
         saveSettings();
-        if (options.streamOutput && !streamState.streamed) {
+        if (options.streamOutput && streamState.streamed) {
+            notes.push(`实时接收 ${streamState.updateCount} 个有效分片`);
+        } else if (options.streamOutput && streamState.buffered) {
+            notes.push('上游只返回了一个完整分片，未形成实时流');
+        } else if (options.streamOutput) {
             notes.push(streamState.supported
-                ? '流式接口暂不可用，已自动回退为普通生成'
-                : '当前连接未提供流式接口，已使用普通生成');
+                ? `流式请求失败，已回退普通生成${streamState.fallbackReason ? `（${streamState.fallbackReason}）` : ''}`
+                : '当前 API 类型未提供独立流式接口，已使用普通生成');
         }
         renderCurrentResult(notes.join(' · '));
     } catch (error) {
@@ -1624,20 +1695,68 @@ function setLoading(loading) {
     root.querySelector('.pf-modal')?.setAttribute('aria-busy', String(loading));
 }
 
-function setStreamingPreview(text = '') {
+function formatStreamStatus(info = {}, value = '') {
+    const source = info.source ? ` · ${info.source}` : '';
+    if (info.phase === 'preparing') return '正在整理世界书与生成要求…';
+    if (info.phase === 'connecting') return `正在建立流式连接${source}…`;
+    if (info.phase === 'connected') return `流式连接已建立${source}，等待首个分片…`;
+    if (info.phase === 'receiving') {
+        const count = Number(info.updateCount || info.eventCount) || 0;
+        return `实时接收中 · ${String(value).length} 字 · ${count} 个有效分片${source}`;
+    }
+    return '正在等待模型输出…';
+}
+
+function scrollStreamingResultIntoView() {
+    const root = state.overlay;
+    const scroller = root?.querySelector('.pf-scroll');
+    const card = root?.querySelector('#pf-result-card');
+    if (!scroller || !card) return;
+    const targetTop = Math.max(0, card.offsetTop - scroller.offsetTop - 12);
+    try {
+        scroller.scrollTo({ top: targetTop, behavior: 'smooth' });
+    } catch {
+        scroller.scrollTop = targetTop;
+    }
+}
+
+function setStreamingPreview(text = '', info = {}) {
     const root = state.overlay;
     if (!root) return;
     const result = root.querySelector('#pf-result');
     const empty = root.querySelector('#pf-empty');
     const value = String(text ?? '');
+    const status = formatStreamStatus(info, value);
     result.textContent = value;
     result.hidden = !value;
     empty.hidden = Boolean(value);
-    if (!value) empty.textContent = '正在等待模型输出…';
-    root.querySelector('#pf-result-meta').textContent = '正在接收模型输出…';
+    if (!value) empty.textContent = status;
+    if (value) result.scrollTop = result.scrollHeight;
+    root.querySelector('#pf-result-meta').textContent = status;
     root.querySelector('#pf-copy').disabled = true;
     root.querySelector('#pf-regenerate').disabled = true;
     root.querySelector('#pf-candidate-panel').hidden = true;
+    const generate = root.querySelector('#pf-generate');
+    if (generate && state.generating) {
+        generate.textContent = value
+            ? `已接收 ${value.length} 字 · ${Number(info.updateCount || info.eventCount) || 0} 片`
+            : '正在连接流式输出…';
+    }
+}
+
+function setStreamingFallbackPreview(reason = '') {
+    const root = state.overlay;
+    if (!root) return;
+    const message = `流式连接未成功，正在切换普通生成${reason ? `：${reason}` : '…'}`;
+    const empty = root.querySelector('#pf-empty');
+    const result = root.querySelector('#pf-result');
+    result.hidden = true;
+    result.textContent = '';
+    empty.hidden = false;
+    empty.textContent = message;
+    root.querySelector('#pf-result-meta').textContent = message;
+    const generate = root.querySelector('#pf-generate');
+    if (generate && state.generating) generate.textContent = '已回退普通生成…';
 }
 
 function setResult(text, meta = '生成完成') {
