@@ -21,5 +21,20 @@ assert.equal(version, manifest.version, 'Manifest and runtime versions must matc
 assert.match(indexSource, /buildPersonaSystemPrompt\(\)/);
 assert.match(indexSource, /renderStructuredResult\(/);
 assert.match(indexSource, /personaWorldNames/);
+assert.match(indexSource, /pf-length-preset/);
+assert.match(indexSource, /pf-target-length/);
+assert.match(indexSource, /pf-content-jump/);
+assert.match(indexSource, /resolveTargetLength/);
+assert.match(indexSource, /floatingPosition/);
+assert.match(indexSource, /bindFloatingDrag/);
+assert.match(indexSource, /isPhoneViewport/);
+assert.match(indexSource, /pf-open-button/);
+assert.match(indexSource, /syncTargetLengthControl/);
+assert.match(indexSource, /streamOutput/);
+assert.match(indexSource, /generateRawWithStreaming/);
+assert.match(indexSource, /getCurrentApiStreaming/);
+assert.match(indexSource, /ChatCompletionService/);
+assert.match(indexSource, /TextCompletionService/);
+assert.match(indexSource, /presetToGeneratePayload/);
 
 console.log('index wiring ok');
