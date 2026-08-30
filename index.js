@@ -14,8 +14,9 @@ import {
 } from './persona-data.js';
 
 const EXTENSION_NAME = 'persona-forge';
+const DISPLAY_NAME = '嘎嘎人设生成器';
 const SETTINGS_KEY = 'personaForge';
-const VERSION = '0.2.0';
+const VERSION = '0.2.1';
 const MAX_LORE_CHARS_DEFAULT = 52000;
 
 const state = {
@@ -46,10 +47,10 @@ function getContext() {
 function notify(type, message) {
     const toast = globalThis.toastr;
     if (toast?.[type]) {
-        toast[type](message, 'Persona Forge');
+        toast[type](message, DISPLAY_NAME);
         return;
     }
-    console[type === 'error' ? 'error' : 'log'](`[Persona Forge] ${message}`);
+    console[type === 'error' ? 'error' : 'log'](`[${DISPLAY_NAME}] ${message}`);
 }
 
 function normalizeArray(value) {
@@ -104,7 +105,7 @@ async function getWorldInfoRuntime() {
         // global books and additional character lorebooks. Lorebook loading itself uses getContext().loadWorldInfo().
         state.worldInfoRuntime = await import('../../../world-info.js');
     } catch (error) {
-        console.warn('[Persona Forge] Could not import world-info runtime. Falling back to context-only detection.', error);
+        console.warn(`[${DISPLAY_NAME}] Could not import world-info runtime. Falling back to context-only detection.`, error);
         state.worldInfoRuntime = {};
     }
     return state.worldInfoRuntime;
@@ -250,7 +251,7 @@ function createStaticUi() {
         <section class="pf-modal" role="dialog" aria-modal="true" aria-labelledby="pf-title">
             <header class="pf-header">
                 <div class="pf-heading-wrap">
-                    <div class="pf-kicker">Persona Forge <span class="pf-version">v${VERSION}</span></div>
+                    <div class="pf-kicker">${DISPLAY_NAME} <span class="pf-version">v${VERSION}</span></div>
                     <h2 id="pf-title">世界观适配 User 人设生成器</h2>
                     <div class="pf-context-line" id="pf-context-line">正在读取当前角色与世界书…</div>
                 </div>
@@ -447,12 +448,12 @@ function createSettingsUi() {
     block.innerHTML = `
         <div class="inline-drawer">
             <div class="inline-drawer-toggle inline-drawer-header">
-                <b>Persona Forge</b>
+                <b>${DISPLAY_NAME}</b>
                 <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
             </div>
             <div class="inline-drawer-content">
                 <p>读取当前角色与世界书，调用当前 SillyTavern 模型生成适配世界观的 User Persona。</p>
-                <button type="button" class="menu_button" id="pf-open-settings">打开 Persona Forge</button>
+                <button type="button" class="menu_button" id="pf-open-settings">打开${DISPLAY_NAME}</button>
                 <label class="checkbox_label pf-settings-check">
                     <input id="pf-show-fab" type="checkbox" ${settings.showFloatingButton ? 'checked' : ''}>
                     <span>显示移动端友好的悬浮入口</span>
@@ -484,9 +485,9 @@ function updateFloatingButton() {
         button.id = 'pf-fab';
         button.className = 'pf-fab';
         button.type = 'button';
-        button.title = '打开 Persona Forge';
-        button.setAttribute('aria-label', '打开 Persona Forge');
-        button.innerHTML = '<span aria-hidden="true">✨</span><span class="pf-fab-text">Persona</span>';
+        button.title = `打开${DISPLAY_NAME}`;
+        button.setAttribute('aria-label', `打开${DISPLAY_NAME}`);
+        button.innerHTML = '<span aria-hidden="true">✨</span><span class="pf-fab-text">嘎嘎</span>';
         button.addEventListener('click', openPanel);
         document.body.appendChild(button);
     }
@@ -908,7 +909,7 @@ async function collectWorldLore(characterContextLength = 0) {
             if (book) entries.push(...extractEntries(book, name));
             else failures.push(name);
         } catch (error) {
-            console.warn(`[Persona Forge] Failed to load World Info: ${name}`, error);
+            console.warn(`[${DISPLAY_NAME}] Failed to load World Info: ${name}`, error);
             failures.push(name);
         }
     }
@@ -1079,7 +1080,7 @@ async function generatePersona() {
         renderCurrentResult(notes.join(' · '));
     } catch (error) {
         if (generationId !== state.generationEpoch) return;
-        console.error('[Persona Forge] Generation failed', error);
+        console.error(`[${DISPLAY_NAME}] Generation failed`, error);
         notify('error', '生成失败：' + (error?.message || error));
         setResultError(error?.message || String(error));
     } finally {
@@ -1126,7 +1127,7 @@ async function rerollNames() {
         renderCurrentResult('已更换候选姓名');
     } catch (error) {
         if (generationId !== state.generationEpoch) return;
-        console.error('[Persona Forge] Name reroll failed', error);
+        console.error(`[${DISPLAY_NAME}] Name reroll failed`, error);
         notify('error', '更换姓名失败：' + (error?.message || error));
     } finally {
         if (generationId === state.generationEpoch) {
@@ -1143,7 +1144,7 @@ function cancelGeneration() {
     try {
         getContext().stopGeneration?.();
     } catch (error) {
-        console.warn('[Persona Forge] Could not stop the underlying request.', error);
+        console.warn(`[${DISPLAY_NAME}] Could not stop the underlying request.`, error);
     }
     setLoading(false);
     notify('info', '已停止生成。');
@@ -1276,7 +1277,7 @@ async function copyCurrentResult() {
             button.classList.remove('is-copied');
         }, 1400);
     } catch (error) {
-        console.error('[Persona Forge] Copy failed', error);
+        console.error(`[${DISPLAY_NAME}] Copy failed`, error);
         notify('error', '复制失败，请长按结果区域手动复制。');
     }
 }
@@ -1315,9 +1316,9 @@ export async function init() {
         updateFloatingButton();
         bindContextEvents();
         await detectWorldBooks();
-        console.info(`[Persona Forge] v${VERSION} loaded.`);
+        console.info(`[${DISPLAY_NAME}] v${VERSION} loaded.`);
     } catch (error) {
-        console.error('[Persona Forge] Init failed', error);
+        console.error(`[${DISPLAY_NAME}] Init failed`, error);
     }
 }
 
