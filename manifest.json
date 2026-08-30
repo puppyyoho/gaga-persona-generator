@@ -1,0 +1,13 @@
+{
+  "display_name": "Persona Forge - 世界观适配 User 人设生成器",
+  "loading_order": 60,
+  "requires": [],
+  "optional": [],
+  "js": "index.js",
+  "css": "style.css",
+  "author": "Persona Forge",
+  "version": "0.1.0",
+  "homePage": "",
+  "auto_update": false,
+  "minimum_client_version": "1.18.0"
+}
