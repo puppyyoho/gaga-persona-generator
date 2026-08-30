@@ -19,7 +19,7 @@ import {
 const EXTENSION_NAME = 'persona-forge';
 const DISPLAY_NAME = '嘎嘎人设生成器';
 const SETTINGS_KEY = 'personaForge';
-const VERSION = '0.2.4';
+const VERSION = '0.2.5';
 const MAX_LORE_CHARS_DEFAULT = 52000;
 
 const state = {
@@ -36,6 +36,7 @@ const state = {
     lastContextSignature: '',
     generating: false,
     generationEpoch: 0,
+    streamAbortController: null,
     structuredResult: null,
     selectedCandidateIndex: 0,
 };
@@ -206,6 +207,7 @@ function ensureSettings() {
         lastStyle: 'balanced',
         lastOutputFormat: 'natural',
         includeSummary: false,
+        streamOutput: true,
         lastSelectedCandidateIndex: 0,
         gender: 'random',
         species: 'random',
@@ -362,6 +364,13 @@ function createStaticUi() {
                         <span>
                             <strong>生成设定摘要</strong>
                             <small>显示核心欲望、核心矛盾、行为驱动和剧情钩子；不会加入正文复制内容。</small>
+                        </span>
+                    </label>
+                    <label class="pf-summary-toggle" for="pf-stream-output">
+                        <input id="pf-stream-output" type="checkbox">
+                        <span>
+                            <strong>实时显示生成过程</strong>
+                            <small>连接管理器选中配置时会边生成边显示；不支持流式接口时自动回退为普通生成。</small>
                         </span>
                     </label>
                     <button type="button" class="pf-content-jump" id="pf-jump-content">↓ 选择生成内容（可勾选）</button>
@@ -758,6 +767,42 @@ function updateLengthVisibility() {
     if (field) field.hidden = preset !== 'custom';
 }
 
+/**
+ * Keep the visible target-length field and the selected preset in sync.
+ * Presets are not merely labels: they define the target sent to the prompt.
+ * A blank custom field falls back to the last valid value instead of the
+ * browser's minimum (300), which used to make the UI and generated prompt
+ * disagree after a blur.
+ */
+function syncTargetLengthControl() {
+    const root = state.overlay;
+    const settings = ensureSettings();
+    const presetInput = root?.querySelector('#pf-length-preset');
+    const targetInput = root?.querySelector('#pf-target-length');
+    const requestedPreset = presetInput?.value || settings.lengthPreset || 'standard';
+    const preset = LENGTH_PRESETS[requestedPreset] || LENGTH_PRESETS.standard;
+    const presetKey = LENGTH_PRESETS[requestedPreset] ? requestedPreset : 'standard';
+    if (presetInput && presetInput.value !== presetKey) presetInput.value = presetKey;
+
+    let targetLength;
+    if (presetKey === 'custom') {
+        const raw = String(targetInput?.value ?? '').trim();
+        const previous = Number(settings.targetLength);
+        const fallback = Number.isFinite(previous)
+            ? previous
+            : LENGTH_PRESETS.standard.targetLength;
+        const candidate = raw === '' ? fallback : Number(raw);
+        targetLength = resolveTargetLength('custom', Number.isFinite(candidate) ? candidate : fallback);
+    } else {
+        targetLength = preset.targetLength;
+    }
+
+    if (targetInput) targetInput.value = String(targetLength);
+    settings.lengthPreset = presetKey;
+    settings.targetLength = targetLength;
+    return targetLength;
+}
+
 function setOutputFormat(format, persist = true) {
     const valid = format === 'yaml' ? 'yaml' : 'natural';
     state.overlay?.querySelectorAll('[data-format]').forEach(button => {
@@ -781,7 +826,7 @@ function syncControlsFromSettings() {
         '#pf-species': settings.species || 'random',
         '#pf-species-detail': settings.speciesDetail || '',
         '#pf-name-count': String(settings.nameCount || 5),
-        '#pf-length-preset': settings.lengthPreset || 'standard',
+        '#pf-length-preset': LENGTH_PRESETS[settings.lengthPreset] ? settings.lengthPreset : 'standard',
         '#pf-target-length': String(settings.targetLength || LENGTH_PRESETS.standard.targetLength),
     };
     for (const [selector, value] of Object.entries(values)) {
@@ -790,6 +835,9 @@ function syncControlsFromSettings() {
     }
     const summaryToggle = root?.querySelector('#pf-include-summary');
     if (summaryToggle) summaryToggle.checked = Boolean(settings.includeSummary);
+    const streamToggle = root?.querySelector('#pf-stream-output');
+    if (streamToggle) streamToggle.checked = settings.streamOutput !== false;
+    syncTargetLengthControl();
     updateSpeciesDetailVisibility();
     updateLengthVisibility();
     setOutputFormat(settings.lastOutputFormat || 'natural', false);
@@ -833,17 +881,22 @@ function bindUiEvents() {
     });
     root.querySelector('#pf-length-preset')?.addEventListener('change', event => {
         ensureSettings().lengthPreset = event.target.value;
+        syncTargetLengthControl();
         updateLengthVisibility();
         saveSettings();
     });
-    root.querySelector('#pf-target-length')?.addEventListener('change', event => {
-        const value = resolveTargetLength('custom', event.target.value);
-        event.target.value = String(value);
-        ensureSettings().targetLength = value;
+    const syncCustomTargetLength = () => {
+        syncTargetLengthControl();
         saveSettings();
-    });
+    };
+    root.querySelector('#pf-target-length')?.addEventListener('change', syncCustomTargetLength);
+    root.querySelector('#pf-target-length')?.addEventListener('blur', syncCustomTargetLength);
     root.querySelector('#pf-include-summary')?.addEventListener('change', event => {
         ensureSettings().includeSummary = Boolean(event.target.checked);
+        saveSettings();
+    });
+    root.querySelector('#pf-stream-output')?.addEventListener('change', event => {
+        ensureSettings().streamOutput = Boolean(event.target.checked);
         saveSettings();
     });
     root.querySelectorAll('[data-preset]').forEach(button => {
@@ -1165,11 +1218,9 @@ function collectGenerationOptions() {
         : '';
     const nameCount = Number(root.querySelector('#pf-name-count')?.value) || 5;
     const lengthPreset = root.querySelector('#pf-length-preset')?.value || 'standard';
-    const targetLength = resolveTargetLength(
-        lengthPreset,
-        root.querySelector('#pf-target-length')?.value,
-    );
+    const targetLength = syncTargetLengthControl();
     const includeSummary = Boolean(root.querySelector('#pf-include-summary')?.checked);
+    const streamOutput = Boolean(root.querySelector('#pf-stream-output')?.checked);
     const sections = getSelectedSections(getCurrentSectionSelection());
     const randomId = globalThis.crypto?.randomUUID?.() || String(Date.now()) + '-' + String(Math.random());
 
@@ -1184,6 +1235,7 @@ function collectGenerationOptions() {
             lengthPreset,
             targetLength,
             includeSummary,
+            streamOutput,
             fixedName: '',
             sections,
             directionText: [
@@ -1209,6 +1261,7 @@ function collectGenerationOptions() {
         lengthPreset,
         targetLength,
         includeSummary,
+        streamOutput,
         fixedName: name,
         sections,
         directionText: [
@@ -1219,6 +1272,77 @@ function collectGenerationOptions() {
             '附加要求：' + ([shortExtra, extra].filter(Boolean).join('；') || '无'),
         ].join('\n'),
     };
+}
+
+function getConnectionManagerStreaming(ctx) {
+    const service = ctx?.ConnectionManagerRequestService;
+    const extensionSettings = ctx?.extensionSettings;
+    const connectionManager = extensionSettings?.connectionManager;
+    const disabled = Array.isArray(extensionSettings?.disabledExtensions)
+        && extensionSettings.disabledExtensions.includes('connection-manager');
+    const profileId = connectionManager?.selectedProfile;
+    const profiles = Array.isArray(connectionManager?.profiles) ? connectionManager.profiles : [];
+    if (disabled || typeof service?.sendRequest !== 'function' || !profileId) return null;
+    if (!profiles.some(profile => profile?.id === profileId)) return null;
+    return { service, profileId };
+}
+
+function mergeStreamText(previous, next) {
+    const value = String(next ?? '');
+    if (!value) return previous;
+    // SillyTavern's stream adapter normally yields the complete text so far,
+    // while a few providers yield deltas. Support both without duplicating text.
+    if (!previous) return value;
+    if (value.startsWith(previous)) return value;
+    if (previous.startsWith(value)) return previous;
+    if (previous.endsWith(value)) return previous;
+    return previous + value;
+}
+
+async function generateRawWithStreaming(ctx, { systemPrompt, prompt, maxTokens, onChunk }) {
+    const connection = getConnectionManagerStreaming(ctx);
+    if (!connection) return { supported: false, streamed: false, text: '' };
+
+    const controller = new AbortController();
+    state.streamAbortController = controller;
+    try {
+        const messages = [
+            ...(systemPrompt ? [{ role: 'system', content: systemPrompt }] : []),
+            { role: 'user', content: prompt },
+        ];
+        const response = await connection.service.sendRequest(
+            connection.profileId,
+            messages,
+            Math.max(512, Math.ceil((Number(maxTokens) || 1000) * 1.35)),
+            {
+                stream: true,
+                signal: controller.signal,
+                extractData: true,
+                includePreset: true,
+                includeInstruct: true,
+            },
+        );
+
+        let text = '';
+        let streamed = false;
+        if (typeof response === 'function') {
+            streamed = true;
+            const generator = response();
+            for await (const chunk of generator) {
+                const chunkText = typeof chunk === 'string'
+                    ? chunk
+                    : (chunk?.text ?? chunk?.content ?? '');
+                text = mergeStreamText(text, chunkText);
+                if (text) onChunk?.(text);
+            }
+        } else {
+            text = response?.content ?? response?.text ?? '';
+        }
+        if (!String(text).trim()) throw new Error('流式接口返回了空内容');
+        return { supported: true, streamed, text: String(text) };
+    } finally {
+        if (state.streamAbortController === controller) state.streamAbortController = null;
+    }
 }
 
 async function generatePersona() {
@@ -1244,13 +1368,34 @@ async function generatePersona() {
             loreText: lore.text,
         });
 
-        const result = await ctx.generateRaw({
-            systemPrompt: buildPersonaSystemPrompt(),
-            prompt,
-        });
+        const systemPrompt = buildPersonaSystemPrompt();
+        let resultText = '';
+        let streamState = { supported: false, streamed: false, text: '' };
+        if (options.streamOutput) {
+            setStreamingPreview('');
+            try {
+                streamState = await generateRawWithStreaming(ctx, {
+                    systemPrompt,
+                    prompt,
+                    maxTokens: options.targetLength,
+                    onChunk: text => {
+                        if (generationId === state.generationEpoch) setStreamingPreview(text);
+                    },
+                });
+            } catch (error) {
+                if (generationId !== state.generationEpoch) return;
+                console.warn(`[${DISPLAY_NAME}] Streaming generation failed; falling back to normal generation.`, error);
+                streamState = { supported: true, streamed: false, text: '', fallback: true };
+            }
+        }
+        if (streamState.text) {
+            resultText = streamState.text;
+        } else {
+            resultText = await ctx.generateRaw({ systemPrompt, prompt });
+        }
 
         if (generationId !== state.generationEpoch) return;
-        const payload = parseStructuredResponse(result);
+        const payload = parseStructuredResponse(resultText);
         state.structuredResult = normalizeStructuredResult(payload, options, ctx.name1);
         state.selectedCandidateIndex = 0;
 
@@ -1272,8 +1417,14 @@ async function generatePersona() {
         settings.lengthPreset = options.lengthPreset;
         settings.targetLength = options.targetLength;
         settings.includeSummary = options.includeSummary;
+        settings.streamOutput = options.streamOutput;
         settings.sectionSelection = getCurrentSectionSelection();
         saveSettings();
+        if (options.streamOutput && !streamState.streamed) {
+            notes.push(streamState.supported
+                ? '流式接口暂不可用，已自动回退为普通生成'
+                : '当前连接未提供流式接口，已使用普通生成');
+        }
         renderCurrentResult(notes.join(' · '));
     } catch (error) {
         if (generationId !== state.generationEpoch) return;
@@ -1338,6 +1489,8 @@ function cancelGeneration() {
     if (!state.generating) return;
     state.generationEpoch += 1;
     state.generating = false;
+    state.streamAbortController?.abort();
+    state.streamAbortController = null;
     try {
         getContext().stopGeneration?.();
     } catch (error) {
@@ -1446,6 +1599,23 @@ function setLoading(loading) {
     generate.classList.toggle('is-loading', loading);
     generate.textContent = loading ? '正在生成…' : '✨ 生成人设';
     root.querySelector('.pf-modal')?.setAttribute('aria-busy', String(loading));
+}
+
+function setStreamingPreview(text = '') {
+    const root = state.overlay;
+    if (!root) return;
+    const result = root.querySelector('#pf-result');
+    const empty = root.querySelector('#pf-empty');
+    const value = String(text ?? '');
+    result.textContent = value;
+    result.hidden = !value;
+    empty.hidden = Boolean(value);
+    if (!value) empty.textContent = '正在等待模型输出…';
+    root.querySelector('#pf-result-meta').textContent = '正在接收模型输出…';
+    root.querySelector('#pf-copy').disabled = true;
+    root.querySelector('#pf-regenerate').disabled = true;
+    root.querySelector('#pf-candidate-panel').hidden = true;
+    root.querySelector('#pf-design-summary').hidden = true;
 }
 
 function setResult(text, meta = '生成完成') {

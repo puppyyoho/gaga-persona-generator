@@ -32,5 +32,8 @@ assert.match(indexSource, /pf-open-button/);
 assert.match(indexSource, /pf-include-summary/);
 assert.match(indexSource, /pf-design-summary/);
 assert.match(indexSource, /materializeDesignSummary/);
+assert.match(indexSource, /syncTargetLengthControl/);
+assert.match(indexSource, /streamOutput/);
+assert.match(indexSource, /generateRawWithStreaming/);
 
 console.log('index wiring ok');

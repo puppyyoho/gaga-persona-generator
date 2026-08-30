@@ -68,6 +68,7 @@ assert.equal(
 );
 
 assert.equal(LENGTH_PRESETS.standard.targetLength, 1000);
+assert.equal(resolveTargetLength('extensive', 1000), LENGTH_PRESETS.extensive.targetLength);
 assert.equal(resolveTargetLength('custom', 1299), 1299);
 assert.equal(resolveTargetLength('custom', 10000), 6000);
 assert.match(buildPersonaGenerationPrompt({ options, characterContext: '', loreText: '' }), /1250/);
