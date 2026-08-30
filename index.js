@@ -18,7 +18,7 @@ import {
 const EXTENSION_NAME = 'persona-forge';
 const DISPLAY_NAME = '嘎嘎人设生成器';
 const SETTINGS_KEY = 'personaForge';
-const VERSION = '0.2.8';
+const VERSION = '0.2.9';
 const MAX_LORE_CHARS_DEFAULT = 52000;
 
 const state = {
