@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {
     buildPersonaGenerationPrompt,
+    buildPersonaSystemPrompt,
     createDefaultSectionSelection,
     getSelectedSections,
     LENGTH_PRESETS,
@@ -80,5 +81,10 @@ assert.equal(resolveTargetLength('custom', 1299), 1299);
 assert.equal(resolveTargetLength('custom', 10000), 6000);
 assert.match(buildPersonaGenerationPrompt({ options, characterContext: '', loreText: '' }), /1250/);
 assert.doesNotMatch(buildPersonaGenerationPrompt({ options, characterContext: '', loreText: '' }), /design_summary/);
+assert.match(buildPersonaSystemPrompt(), /欲望、阻碍、选择、代价/);
+assert.match(buildPersonaSystemPrompt(), /冰山式取舍/);
+assert.match(buildPersonaSystemPrompt(), /绝对禁止使用“不是……而是……”/);
+assert.match(buildPersonaSystemPrompt(), /绝对禁止使用破折号/);
+assert.match(buildPersonaGenerationPrompt({ options, characterContext: '', loreText: '' }), /不得使用先否定后肯定的对照句式/);
 
 console.log('persona-data logic ok');
