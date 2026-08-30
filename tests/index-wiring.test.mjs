@@ -21,5 +21,9 @@ assert.equal(version, manifest.version, 'Manifest and runtime versions must matc
 assert.match(indexSource, /buildPersonaSystemPrompt\(\)/);
 assert.match(indexSource, /renderStructuredResult\(/);
 assert.match(indexSource, /personaWorldNames/);
+assert.match(indexSource, /pf-length-preset/);
+assert.match(indexSource, /pf-target-length/);
+assert.match(indexSource, /pf-content-jump/);
+assert.match(indexSource, /resolveTargetLength/);
 
 console.log('index wiring ok');

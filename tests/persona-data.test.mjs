@@ -1,11 +1,14 @@
 import assert from 'node:assert/strict';
 import {
+    buildPersonaGenerationPrompt,
     createDefaultSectionSelection,
     getSelectedSections,
+    LENGTH_PRESETS,
     neutralizePersonaReferences,
     normalizeStructuredResult,
     parseStructuredResponse,
     renderStructuredResult,
+    resolveTargetLength,
 } from '../persona-data.js';
 
 const options = {
@@ -13,8 +16,12 @@ const options = {
     species: 'human',
     speciesDetail: '',
     nameCount: 3,
+    lengthPreset: 'custom',
+    targetLength: 1250,
     fixedName: '',
+    style: 'balanced',
     sections: getSelectedSections(createDefaultSectionSelection()),
+    directionText: 'test generation',
 };
 
 const payload = {
@@ -49,5 +56,10 @@ assert.equal(
     neutralizePersonaReferences('{{user}}与{{char}}', '旧U', '角色A'),
     '[[PF_NAME]]与角色A',
 );
+
+assert.equal(LENGTH_PRESETS.standard.targetLength, 1000);
+assert.equal(resolveTargetLength('custom', 1299), 1299);
+assert.equal(resolveTargetLength('custom', 10000), 6000);
+assert.match(buildPersonaGenerationPrompt({ options, characterContext: '', loreText: '' }), /1250/);
 
 console.log('persona-data logic ok');

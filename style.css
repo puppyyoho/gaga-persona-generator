@@ -322,6 +322,44 @@ html.pf-modal-open body {
     overflow: hidden;
 }
 
+.pf-content-card {
+    overflow: visible;
+}
+
+.pf-content-head {
+    align-items: center;
+    margin-bottom: 0;
+}
+
+.pf-content-head > small {
+    flex: 0 0 auto;
+    color: var(--pf-muted);
+    font-weight: 600;
+}
+
+.pf-content-card .pf-detail-body {
+    padding: 0;
+    border-top: 0;
+}
+
+.pf-content-jump {
+    display: inline-flex;
+    align-items: center;
+    min-height: 36px;
+    margin-top: 12px;
+    padding: 7px 11px;
+    border: 1px solid color-mix(in srgb, var(--pf-accent) 42%, var(--pf-border));
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--pf-accent) 10%, transparent);
+    color: var(--pf-text);
+    cursor: pointer;
+    touch-action: manipulation;
+}
+
+.pf-content-jump:hover {
+    background: color-mix(in srgb, var(--pf-accent) 16%, transparent);
+}
+
 .pf-details summary {
     min-height: 52px;
     padding: 13px 15px;

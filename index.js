@@ -1,4 +1,5 @@
 import {
+    LENGTH_PRESETS,
     SECTION_GROUPS,
     SECTION_PRESETS,
     buildNameRerollPrompt,
@@ -10,13 +11,14 @@ import {
     normalizeNameCandidates,
     normalizeStructuredResult,
     parseStructuredResponse,
+    resolveTargetLength,
     renderStructuredResult,
 } from './persona-data.js';
 
 const EXTENSION_NAME = 'persona-forge';
 const DISPLAY_NAME = '嘎嘎人设生成器';
 const SETTINGS_KEY = 'personaForge';
-const VERSION = '0.2.1';
+const VERSION = '0.2.2';
 const MAX_LORE_CHARS_DEFAULT = 52000;
 
 const state = {
@@ -205,6 +207,8 @@ function ensureSettings() {
         species: 'random',
         speciesDetail: '',
         nameCount: 5,
+        lengthPreset: 'standard',
+        targetLength: LENGTH_PRESETS.standard.targetLength,
         sectionSelection: createDefaultSectionSelection(),
     };
     const current = root[SETTINGS_KEY] && typeof root[SETTINGS_KEY] === 'object'
@@ -317,7 +321,7 @@ function createStaticUi() {
                         </label>
                     </div>
 
-                    <div class="pf-grid pf-grid-2">
+                    <div class="pf-grid pf-grid-3">
                         <label class="pf-field" id="pf-species-detail-field" hidden>
                             <span>具体种族 <small>留空则跟随世界观</small></span>
                             <input id="pf-species-detail" type="text" autocomplete="off" placeholder="例如：狐族兽人、吸血鬼、机器人">
@@ -330,11 +334,26 @@ function createStaticUi() {
                                 <option value="7">7 个</option>
                             </select>
                         </label>
+                        <label class="pf-field">
+                            <span>人设长度</span>
+                            <select id="pf-length-preset">
+                                <option value="concise">精简（约 600 字）</option>
+                                <option value="standard">标准（约 1000 字）</option>
+                                <option value="detailed">详细（约 1800 字）</option>
+                                <option value="extensive">超详细（约 2800 字）</option>
+                                <option value="custom">自定义字数</option>
+                            </select>
+                        </label>
+                        <label class="pf-field" id="pf-target-length-field" hidden>
+                            <span>目标字数 <small>允许上下浮动约 20%</small></span>
+                            <input id="pf-target-length" type="number" min="300" max="6000" step="100" inputmode="numeric" value="1000">
+                        </label>
                         <label class="pf-field pf-field-wide">
                             <span>附加要求 <small>随机模式也可填写</small></span>
                             <input id="pf-extra-short" type="text" autocomplete="off" placeholder="例如：不要贵族、偏日常、年龄30岁左右">
                         </label>
                     </div>
+                    <button type="button" class="pf-content-jump" id="pf-jump-content">↓ 选择生成内容（可勾选）</button>
 
                     <div id="pf-directed-fields" class="pf-directed-fields" hidden>
                         <div class="pf-grid pf-grid-2">
@@ -358,11 +377,14 @@ function createStaticUi() {
                     </div>
                 </section>
 
-                <details class="pf-card pf-details" id="pf-content-details" open>
-                    <summary>
-                        <span>生成内容</span>
+                <section class="pf-card pf-content-card" id="pf-content-details">
+                    <div class="pf-section-head pf-content-head">
+                        <div>
+                            <h3>生成内容（可勾选）</h3>
+                            <p>下面的栏目会直接决定人设里生成哪些内容；不需要的项目可以取消勾选。</p>
+                        </div>
                         <small id="pf-section-count">0 项已选</small>
-                    </summary>
+                    </div>
                     <div class="pf-detail-body">
                         <div class="pf-preset-toolbar" aria-label="内容预设">
                             <button class="pf-mini-button" type="button" data-preset="compact">精简</button>
@@ -372,7 +394,7 @@ function createStaticUi() {
                         </div>
                         <div id="pf-section-groups" class="pf-section-groups"></div>
                     </div>
-                </details>
+                </section>
 
                 <details class="pf-card pf-details" id="pf-book-details">
                     <summary>
@@ -601,6 +623,13 @@ function updateSpeciesDetailVisibility() {
     if (field) field.hidden = species !== 'nonhuman';
 }
 
+function updateLengthVisibility() {
+    const root = state.overlay;
+    const preset = root?.querySelector('#pf-length-preset')?.value || 'standard';
+    const field = root?.querySelector('#pf-target-length-field');
+    if (field) field.hidden = preset !== 'custom';
+}
+
 function setOutputFormat(format, persist = true) {
     const valid = format === 'yaml' ? 'yaml' : 'natural';
     state.overlay?.querySelectorAll('[data-format]').forEach(button => {
@@ -624,12 +653,15 @@ function syncControlsFromSettings() {
         '#pf-species': settings.species || 'random',
         '#pf-species-detail': settings.speciesDetail || '',
         '#pf-name-count': String(settings.nameCount || 5),
+        '#pf-length-preset': settings.lengthPreset || 'standard',
+        '#pf-target-length': String(settings.targetLength || LENGTH_PRESETS.standard.targetLength),
     };
     for (const [selector, value] of Object.entries(values)) {
         const input = root?.querySelector(selector);
         if (input) input.value = value;
     }
     updateSpeciesDetailVisibility();
+    updateLengthVisibility();
     setOutputFormat(settings.lastOutputFormat || 'natural', false);
 }
 
@@ -669,6 +701,17 @@ function bindUiEvents() {
         ensureSettings().nameCount = Number(event.target.value) || 5;
         saveSettings();
     });
+    root.querySelector('#pf-length-preset')?.addEventListener('change', event => {
+        ensureSettings().lengthPreset = event.target.value;
+        updateLengthVisibility();
+        saveSettings();
+    });
+    root.querySelector('#pf-target-length')?.addEventListener('change', event => {
+        const value = resolveTargetLength('custom', event.target.value);
+        event.target.value = String(value);
+        ensureSettings().targetLength = value;
+        saveSettings();
+    });
     root.querySelectorAll('[data-preset]').forEach(button => {
         button.addEventListener('click', () => applySectionPreset(button.dataset.preset));
     });
@@ -681,6 +724,11 @@ function bindUiEvents() {
     root.querySelector('#pf-regenerate')?.addEventListener('click', generatePersona);
     root.querySelector('#pf-reroll-names')?.addEventListener('click', rerollNames);
     root.querySelector('#pf-cancel')?.addEventListener('click', cancelGeneration);
+    root.querySelector('#pf-jump-content')?.addEventListener('click', () => {
+        const content = root.querySelector('#pf-content-details');
+        content?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        root.querySelector('[data-section-id]')?.focus({ preventScroll: true });
+    });
     root.querySelector('#pf-select-active')?.addEventListener('click', () => {
         state.selectedWorldNames = new Set(state.activeWorldNames);
         renderWorldBookList();
@@ -982,6 +1030,11 @@ function collectGenerationOptions() {
         ? root.querySelector('#pf-species-detail')?.value?.trim() || ''
         : '';
     const nameCount = Number(root.querySelector('#pf-name-count')?.value) || 5;
+    const lengthPreset = root.querySelector('#pf-length-preset')?.value || 'standard';
+    const targetLength = resolveTargetLength(
+        lengthPreset,
+        root.querySelector('#pf-target-length')?.value,
+    );
     const sections = getSelectedSections(getCurrentSectionSelection());
     const randomId = globalThis.crypto?.randomUUID?.() || String(Date.now()) + '-' + String(Math.random());
 
@@ -993,6 +1046,8 @@ function collectGenerationOptions() {
             species,
             speciesDetail,
             nameCount,
+            lengthPreset,
+            targetLength,
             fixedName: '',
             sections,
             directionText: [
@@ -1015,6 +1070,8 @@ function collectGenerationOptions() {
         species,
         speciesDetail,
         nameCount: name ? 1 : nameCount,
+        lengthPreset,
+        targetLength,
         fixedName: name,
         sections,
         directionText: [
@@ -1075,6 +1132,8 @@ async function generatePersona() {
         settings.species = options.species;
         settings.speciesDetail = options.speciesDetail;
         settings.nameCount = options.nameCount;
+        settings.lengthPreset = options.lengthPreset;
+        settings.targetLength = options.targetLength;
         settings.sectionSelection = getCurrentSectionSelection();
         saveSettings();
         renderCurrentResult(notes.join(' · '));
