@@ -18,7 +18,7 @@ import {
 const EXTENSION_NAME = 'persona-forge';
 const DISPLAY_NAME = '嘎嘎人设生成器';
 const SETTINGS_KEY = 'personaForge';
-const VERSION = '0.2.6';
+const VERSION = '0.2.7';
 const MAX_LORE_CHARS_DEFAULT = 52000;
 
 const state = {
@@ -363,7 +363,7 @@ function createStaticUi() {
                         <input id="pf-stream-output" type="checkbox">
                         <span>
                             <strong>实时显示生成过程</strong>
-                            <small>连接管理器选中配置时会边生成边显示；不支持流式接口时自动回退为普通生成。</small>
+                            <small>当前 API 或连接管理器支持时会边生成边显示；不支持流式接口时自动回退为普通生成。</small>
                         </span>
                     </label>
                     <button type="button" class="pf-content-jump" id="pf-jump-content">↓ 选择生成内容（可勾选）</button>
@@ -1264,6 +1264,46 @@ function getConnectionManagerStreaming(ctx) {
     return { service, profileId };
 }
 
+function getCurrentApiStreaming(ctx) {
+    const mainApi = String(ctx?.mainApi || '').toLowerCase();
+    const isTextApi = Boolean(mainApi) && mainApi !== 'openai';
+    const chatService = ctx?.ChatCompletionService;
+    if (!isTextApi
+        && typeof chatService?.presetToGeneratePayload === 'function'
+        && typeof chatService?.sendRequest === 'function'
+        && ctx?.chatCompletionSettings) {
+        return {
+            api: 'chat',
+            service: chatService,
+            settings: ctx.chatCompletionSettings,
+        };
+    }
+
+    const textService = ctx?.TextCompletionService;
+    if (isTextApi
+        && typeof textService?.presetToGeneratePayload === 'function'
+        && typeof textService?.sendRequest === 'function'
+        && ctx?.textCompletionSettings) {
+        return {
+            api: 'text',
+            service: textService,
+            settings: ctx.textCompletionSettings,
+        };
+    }
+
+    return null;
+}
+
+function cloneSettings(settings) {
+    if (!settings || typeof settings !== 'object') return {};
+    try {
+        if (typeof structuredClone === 'function') return structuredClone(settings);
+    } catch (error) {
+        console.warn(`[${DISPLAY_NAME}] Could not clone generation settings; using a shallow copy.`, error);
+    }
+    return { ...settings };
+}
+
 function mergeStreamText(previous, next) {
     const value = String(next ?? '');
     if (!value) return previous;
@@ -1278,27 +1318,61 @@ function mergeStreamText(previous, next) {
 
 async function generateRawWithStreaming(ctx, { systemPrompt, prompt, maxTokens, onChunk }) {
     const connection = getConnectionManagerStreaming(ctx);
-    if (!connection) return { supported: false, streamed: false, text: '' };
+    const currentApi = connection ? null : getCurrentApiStreaming(ctx);
+    if (!connection && !currentApi) return { supported: false, streamed: false, text: '' };
 
     const controller = new AbortController();
     state.streamAbortController = controller;
     try {
-        const messages = [
-            ...(systemPrompt ? [{ role: 'system', content: systemPrompt }] : []),
-            { role: 'user', content: prompt },
-        ];
-        const response = await connection.service.sendRequest(
-            connection.profileId,
-            messages,
-            Math.max(512, Math.ceil((Number(maxTokens) || 1000) * 1.35)),
-            {
-                stream: true,
-                signal: controller.signal,
-                extractData: true,
-                includePreset: true,
-                includeInstruct: true,
-            },
-        );
+        const effectiveMaxTokens = Math.max(512, Math.ceil((Number(maxTokens) || 1000) * 1.35));
+        let response;
+
+        if (connection) {
+            const messages = [
+                ...(systemPrompt ? [{ role: 'system', content: systemPrompt }] : []),
+                { role: 'user', content: prompt },
+            ];
+            response = await connection.service.sendRequest(
+                connection.profileId,
+                messages,
+                effectiveMaxTokens,
+                {
+                    stream: true,
+                    signal: controller.signal,
+                    extractData: true,
+                    includePreset: true,
+                    includeInstruct: true,
+                },
+            );
+        } else if (currentApi.api === 'chat') {
+            const settings = cloneSettings(currentApi.settings);
+            settings.openai_max_tokens = effectiveMaxTokens;
+            const messages = [
+                ...(systemPrompt ? [{ role: 'system', content: systemPrompt }] : []),
+                { role: 'user', content: prompt },
+            ];
+            const overridePayload = { messages, stream: true };
+            const payload = await currentApi.service.presetToGeneratePayload(
+                settings,
+                {},
+                overridePayload,
+            );
+            response = await currentApi.service.sendRequest(payload, true, controller.signal);
+        } else {
+            const settings = cloneSettings(currentApi.settings);
+            settings.streaming = true;
+            const finalPrompt = [systemPrompt, prompt].filter(Boolean).join('\n\n');
+            const payload = currentApi.service.presetToGeneratePayload(
+                settings,
+                {},
+                {
+                    prompt: finalPrompt,
+                    max_tokens: effectiveMaxTokens,
+                    stream: true,
+                },
+            );
+            response = await currentApi.service.sendRequest(payload, true, controller.signal);
+        }
 
         let text = '';
         let streamed = false;
@@ -1312,8 +1386,19 @@ async function generateRawWithStreaming(ctx, { systemPrompt, prompt, maxTokens, 
                 text = mergeStreamText(text, chunkText);
                 if (text) onChunk?.(text);
             }
+        } else if (response && typeof response[Symbol.asyncIterator] === 'function') {
+            streamed = true;
+            for await (const chunk of response) {
+                const chunkText = typeof chunk === 'string'
+                    ? chunk
+                    : (chunk?.text ?? chunk?.content ?? '');
+                text = mergeStreamText(text, chunkText);
+                if (text) onChunk?.(text);
+            }
         } else {
-            text = response?.content ?? response?.text ?? '';
+            text = typeof response === 'string'
+                ? response
+                : (response?.content ?? response?.text ?? '');
         }
         if (!String(text).trim()) throw new Error('流式接口返回了空内容');
         return { supported: true, streamed, text: String(text) };

@@ -32,5 +32,9 @@ assert.match(indexSource, /pf-open-button/);
 assert.match(indexSource, /syncTargetLengthControl/);
 assert.match(indexSource, /streamOutput/);
 assert.match(indexSource, /generateRawWithStreaming/);
+assert.match(indexSource, /getCurrentApiStreaming/);
+assert.match(indexSource, /ChatCompletionService/);
+assert.match(indexSource, /TextCompletionService/);
+assert.match(indexSource, /presetToGeneratePayload/);
 
 console.log('index wiring ok');

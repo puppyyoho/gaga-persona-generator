@@ -1,4 +1,4 @@
-# 嘎嘎人设生成器 v0.2.6
+# 嘎嘎人设生成器 v0.2.7
 
 一个面向 SillyTavern 1.18.0+ 的世界观适配 User Persona 生成扩展。
 
@@ -16,7 +16,7 @@
 - 支持 YAML 与带小标题的自然语言两种输出格式，切换格式不重新调用模型。
 - 支持精简、标准、详细、超详细和自定义字数（约 300–6000 字）。
 - 选择的长度预设会立即同步目标字数；自定义字数留空时保留上一次有效值。
-- 可选流式输出：连接管理器存在已选配置时边生成边显示，不支持时自动回退为普通生成。
+- 可选流式输出：当前 API 或连接管理器支持时边生成边显示，不支持时自动回退为普通生成。
 - 增加精简、标准、剧情丰富和自定义内容范围。
 - “生成内容（可勾选）”现在会直接展开显示，不需要额外寻找折叠面板。
 - 关系网络可选父母、兄弟姐妹、朋友、重要 NPC、前任、伴侣、竞争者和宠物。
@@ -103,7 +103,8 @@ YAML 模式适合结构化编辑、字段锁定和后续保存为 Persona。
 主要公开调用来自 SillyTavern.getContext()：
 
 - generateRaw()
-- ConnectionManagerRequestService（可选，用于流式生成）
+- ChatCompletionService / TextCompletionService（用于当前 API 的流式生成）
+- ConnectionManagerRequestService（可选，用于连接管理器配置的流式生成）
 - loadWorldInfo()
 - getWorldInfoNames()
 - extensionSettings
