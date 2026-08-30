@@ -36,5 +36,10 @@ assert.match(indexSource, /getCurrentApiStreaming/);
 assert.match(indexSource, /ChatCompletionService/);
 assert.match(indexSource, /TextCompletionService/);
 assert.match(indexSource, /presetToGeneratePayload/);
+assert.match(indexSource, /mainApi === 'openai'/);
+assert.match(indexSource, /mainApi === 'textgenerationwebui'/);
+assert.match(indexSource, /updateCount > 1/);
+assert.match(indexSource, /scrollStreamingResultIntoView/);
+assert.match(indexSource, /setStreamingFallbackPreview/);
 
 console.log('index wiring ok');
