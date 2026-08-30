@@ -20,6 +20,7 @@ const options = {
     targetLength: 1250,
     fixedName: '',
     style: 'balanced',
+    includeSummary: true,
     sections: getSelectedSections(createDefaultSectionSelection()),
     directionText: 'test generation',
 };
@@ -38,6 +39,12 @@ const payload = {
         },
         外貌与体型: '林知夏身形修长',
     },
+    design_summary: {
+        核心欲望: '想要证明自己的价值',
+        核心矛盾: '渴望信任却害怕再次受伤',
+        行为驱动: '先观察再行动',
+        剧情钩子: ['一桩尚未解决的旧案'],
+    },
 };
 
 const fenced = String.fromCharCode(96).repeat(3) + 'json\n' + JSON.stringify(payload) + '\n' + String.fromCharCode(96).repeat(3);
@@ -50,8 +57,11 @@ assert.match(yaml, /姓名: "沈遥"/);
 assert.match(yaml, /性别: "女"/);
 assert.doesNotMatch(yaml, /林知夏/);
 assert.doesNotMatch(yaml, /当前U/);
+assert.match(result.designSummary.核心欲望, /证明自己的价值/);
+assert.deepEqual(result.designSummary.剧情钩子, ['一桩尚未解决的旧案']);
 assert.match(natural, /【基本身份】/);
 assert.match(natural, /林知夏/);
+assert.doesNotMatch(natural, /设定摘要/);
 assert.equal(
     neutralizePersonaReferences('{{user}}与{{char}}', '旧U', '角色A'),
     '[[PF_NAME]]与角色A',
@@ -61,5 +71,6 @@ assert.equal(LENGTH_PRESETS.standard.targetLength, 1000);
 assert.equal(resolveTargetLength('custom', 1299), 1299);
 assert.equal(resolveTargetLength('custom', 10000), 6000);
 assert.match(buildPersonaGenerationPrompt({ options, characterContext: '', loreText: '' }), /1250/);
+assert.match(buildPersonaGenerationPrompt({ options, characterContext: '', loreText: '' }), /design_summary/);
 
 console.log('persona-data logic ok');

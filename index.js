@@ -10,6 +10,7 @@ import {
     neutralizePersonaReferences,
     normalizeNameCandidates,
     normalizeStructuredResult,
+    materializeDesignSummary,
     parseStructuredResponse,
     resolveTargetLength,
     renderStructuredResult,
@@ -18,7 +19,7 @@ import {
 const EXTENSION_NAME = 'persona-forge';
 const DISPLAY_NAME = '嘎嘎人设生成器';
 const SETTINGS_KEY = 'personaForge';
-const VERSION = '0.2.3';
+const VERSION = '0.2.4';
 const MAX_LORE_CHARS_DEFAULT = 52000;
 
 const state = {
@@ -204,6 +205,7 @@ function ensureSettings() {
         lastMode: 'random',
         lastStyle: 'balanced',
         lastOutputFormat: 'natural',
+        includeSummary: false,
         lastSelectedCandidateIndex: 0,
         gender: 'random',
         species: 'random',
@@ -355,6 +357,13 @@ function createStaticUi() {
                             <input id="pf-extra-short" type="text" autocomplete="off" placeholder="例如：不要贵族、偏日常、年龄30岁左右">
                         </label>
                     </div>
+                    <label class="pf-summary-toggle" for="pf-include-summary">
+                        <input id="pf-include-summary" type="checkbox">
+                        <span>
+                            <strong>生成设定摘要</strong>
+                            <small>显示核心欲望、核心矛盾、行为驱动和剧情钩子；不会加入正文复制内容。</small>
+                        </span>
+                    </label>
                     <button type="button" class="pf-content-jump" id="pf-jump-content">↓ 选择生成内容（可勾选）</button>
 
                     <div id="pf-directed-fields" class="pf-directed-fields" hidden>
@@ -432,6 +441,13 @@ function createStaticUi() {
                         </div>
                         <div class="pf-name-candidates" id="pf-name-candidates"></div>
                     </div>
+                    <details class="pf-summary-card" id="pf-design-summary" hidden>
+                        <summary>
+                            <span>设定摘要</span>
+                            <small>仅供参考，不会复制</small>
+                        </summary>
+                        <div class="pf-summary-body" id="pf-design-summary-body"></div>
+                    </details>
                     <div class="pf-output-toolbar" id="pf-output-toolbar">
                         <span class="pf-label-mini">输出格式</span>
                         <div class="pf-format-toggle" role="radiogroup" aria-label="输出格式">
@@ -772,6 +788,8 @@ function syncControlsFromSettings() {
         const input = root?.querySelector(selector);
         if (input) input.value = value;
     }
+    const summaryToggle = root?.querySelector('#pf-include-summary');
+    if (summaryToggle) summaryToggle.checked = Boolean(settings.includeSummary);
     updateSpeciesDetailVisibility();
     updateLengthVisibility();
     setOutputFormat(settings.lastOutputFormat || 'natural', false);
@@ -822,6 +840,10 @@ function bindUiEvents() {
         const value = resolveTargetLength('custom', event.target.value);
         event.target.value = String(value);
         ensureSettings().targetLength = value;
+        saveSettings();
+    });
+    root.querySelector('#pf-include-summary')?.addEventListener('change', event => {
+        ensureSettings().includeSummary = Boolean(event.target.checked);
         saveSettings();
     });
     root.querySelectorAll('[data-preset]').forEach(button => {
@@ -1147,6 +1169,7 @@ function collectGenerationOptions() {
         lengthPreset,
         root.querySelector('#pf-target-length')?.value,
     );
+    const includeSummary = Boolean(root.querySelector('#pf-include-summary')?.checked);
     const sections = getSelectedSections(getCurrentSectionSelection());
     const randomId = globalThis.crypto?.randomUUID?.() || String(Date.now()) + '-' + String(Math.random());
 
@@ -1160,6 +1183,7 @@ function collectGenerationOptions() {
             nameCount,
             lengthPreset,
             targetLength,
+            includeSummary,
             fixedName: '',
             sections,
             directionText: [
@@ -1184,6 +1208,7 @@ function collectGenerationOptions() {
         nameCount: name ? 1 : nameCount,
         lengthPreset,
         targetLength,
+        includeSummary,
         fixedName: name,
         sections,
         directionText: [
@@ -1246,6 +1271,7 @@ async function generatePersona() {
         settings.nameCount = options.nameCount;
         settings.lengthPreset = options.lengthPreset;
         settings.targetLength = options.targetLength;
+        settings.includeSummary = options.includeSummary;
         settings.sectionSelection = getCurrentSectionSelection();
         saveSettings();
         renderCurrentResult(notes.join(' · '));
@@ -1354,11 +1380,49 @@ function renderCandidateButtons() {
     if (reroll) reroll.hidden = Boolean(state.structuredResult?.options?.fixedName);
 }
 
+function renderDesignSummary() {
+    const root = state.overlay;
+    const card = root?.querySelector('#pf-design-summary');
+    const body = root?.querySelector('#pf-design-summary-body');
+    if (!card || !body) return;
+    const summary = materializeDesignSummary(state.structuredResult, state.selectedCandidateIndex);
+    body.replaceChildren();
+    if (!summary || typeof summary !== 'object') {
+        card.hidden = true;
+        return;
+    }
+
+    for (const [label, value] of Object.entries(summary)) {
+        const row = document.createElement('div');
+        row.className = 'pf-summary-row';
+        const heading = document.createElement('strong');
+        heading.textContent = label;
+        row.appendChild(heading);
+
+        if (Array.isArray(value)) {
+            const list = document.createElement('ul');
+            for (const item of value) {
+                const li = document.createElement('li');
+                li.textContent = String(item);
+                list.appendChild(li);
+            }
+            row.appendChild(list);
+        } else {
+            const text = document.createElement('p');
+            text.textContent = String(value);
+            row.appendChild(text);
+        }
+        body.appendChild(row);
+    }
+    card.hidden = body.childElementCount === 0;
+}
+
 function renderCurrentResult(meta = '生成完成，可切换姓名和输出格式') {
     if (!state.structuredResult) return;
     const format = ensureSettings().lastOutputFormat || 'natural';
     const text = renderStructuredResult(state.structuredResult, state.selectedCandidateIndex, format);
     renderCandidateButtons();
+    renderDesignSummary();
     setResult(text, meta);
 }
 
@@ -1406,6 +1470,8 @@ function setResultError(message) {
     result.textContent = '';
     const candidatePanel = root.querySelector('#pf-candidate-panel');
     if (candidatePanel) candidatePanel.hidden = true;
+    const summaryCard = root.querySelector('#pf-design-summary');
+    if (summaryCard) summaryCard.hidden = true;
     empty.hidden = false;
     empty.textContent = `生成失败：${message}`;
     root.querySelector('#pf-result-meta').textContent = '请检查当前 API 连接后重试。';
