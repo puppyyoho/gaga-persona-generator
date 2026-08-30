@@ -18,7 +18,7 @@ import {
 const EXTENSION_NAME = 'persona-forge';
 const DISPLAY_NAME = '嘎嘎人设生成器';
 const SETTINGS_KEY = 'personaForge';
-const VERSION = '0.3.1';
+const VERSION = '0.3.2';
 const MAX_LORE_CHARS_DEFAULT = 52000;
 
 const state = {
@@ -1286,7 +1286,10 @@ function getCurrentApiStreaming(ctx) {
             api: 'chat',
             service: chatService,
             settings: ctx.chatCompletionSettings,
-            label: '当前 Chat Completion',
+            label: [
+                ctx.chatCompletionSettings.chat_completion_source || 'Chat Completion',
+                ctx.getChatCompletionModel?.(ctx.chatCompletionSettings),
+            ].filter(Boolean).join(' · '),
         };
     }
 
@@ -1326,6 +1329,39 @@ function getActiveTextCompletionPreset(ctx, settings) {
         console.warn(`[${DISPLAY_NAME}] Could not read the active Text Completion preset.`, error);
         return null;
     }
+}
+
+async function buildCoreChatStreamingPayload(ctx, currentApi, messages) {
+    // ChatCompletionService.presetToGeneratePayload() intentionally builds a
+    // "quiet" request. SillyTavern disables streaming while building quiet
+    // requests, so changing only payload.stream afterwards is not equivalent
+    // to the native streaming path. Build with the same "normal" path used by
+    // the main chat, then remove chat-only tools and multi-swipe fields.
+    const runtime = await import('/scripts/openai.js');
+    if (typeof runtime.createGenerationParameters !== 'function') {
+        throw new Error('当前 SillyTavern 未导出原生 Chat Completion 参数构造器');
+    }
+
+    const settings = cloneSettings(currentApi.settings);
+    settings.stream_openai = true;
+    const model = ctx.getChatCompletionModel?.(settings);
+    const built = await runtime.createGenerationParameters(settings, model, 'normal', messages);
+    const payload = built?.generate_data;
+    if (!payload || typeof payload !== 'object') {
+        throw new Error('无法构造原生 Chat Completion 流式请求');
+    }
+
+    payload.stream = true;
+    delete payload.n;
+    delete payload.tools;
+    delete payload.tool_choice;
+    delete payload.assistant_prefill;
+
+    const readyEvent = ctx.eventTypes?.CHAT_COMPLETION_SETTINGS_READY;
+    if (readyEvent && typeof ctx.eventSource?.emit === 'function') {
+        await ctx.eventSource.emit(readyEvent, payload);
+    }
+    return payload;
 }
 
 function mergeStreamText(previous, next) {
@@ -1397,12 +1433,7 @@ async function generateRawWithStreaming(ctx, { systemPrompt, prompt, maxTokens, 
                 ...(systemPrompt ? [{ role: 'system', content: systemPrompt }] : []),
                 { role: 'user', content: prompt },
             ];
-            const overridePayload = { messages, stream: true };
-            const payload = await currentApi.service.presetToGeneratePayload(
-                currentApi.settings,
-                {},
-                overridePayload,
-            );
+            const payload = await buildCoreChatStreamingPayload(ctx, currentApi, messages);
             response = await currentApi.service.sendRequest(payload, true, controller.signal);
         } else {
             const activePreset = getActiveTextCompletionPreset(ctx, currentApi.settings);
@@ -1431,6 +1462,10 @@ async function generateRawWithStreaming(ctx, { systemPrompt, prompt, maxTokens, 
                 {},
                 overridePayload,
             );
+            const readyEvent = ctx.eventTypes?.TEXT_COMPLETION_SETTINGS_READY;
+            if (readyEvent && typeof ctx.eventSource?.emit === 'function') {
+                await ctx.eventSource.emit(readyEvent, payload);
+            }
             response = await currentApi.service.sendRequest(payload, true, controller.signal);
         }
 
@@ -1487,6 +1522,9 @@ async function generateRawWithStreaming(ctx, { systemPrompt, prompt, maxTokens, 
             elapsedMs,
             buffered: Boolean((generator && updateCount <= 1) || (!generator && text)),
         };
+    } catch (error) {
+        const detail = readableError(error);
+        throw new Error(`${source} · ${detail}`);
     } finally {
         if (state.streamAbortController === controller) state.streamAbortController = null;
     }
