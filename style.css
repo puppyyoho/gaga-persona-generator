@@ -240,6 +240,14 @@ html.pf-modal-open body {
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
 }
 
+.pf-grid-3 {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.pf-field-wide {
+    grid-column: 1 / -1;
+}
+
 .pf-top-gap,
 .pf-directed-fields {
     margin-top: 12px;
@@ -302,6 +310,8 @@ html.pf-modal-open body {
 .pf-secondary-button:focus-visible,
 .pf-copy-button:focus-visible,
 .pf-mini-button:focus-visible,
+.pf-name-button:focus-visible,
+.pf-format-button:focus-visible,
 .pf-fab:focus-visible {
     border-color: var(--pf-accent);
     box-shadow: 0 0 0 3px color-mix(in srgb, var(--pf-accent) 22%, transparent);
@@ -353,6 +363,75 @@ html.pf-modal-open body {
     touch-action: manipulation;
 }
 
+.pf-mini-button.is-active {
+    border-color: color-mix(in srgb, var(--pf-accent) 55%, transparent);
+    background: color-mix(in srgb, var(--pf-accent) 16%, transparent);
+    color: var(--pf-text);
+}
+
+.pf-preset-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 7px;
+    margin: 12px 0 4px;
+}
+
+.pf-section-groups {
+    display: grid;
+    gap: 14px;
+    margin-top: 12px;
+}
+
+.pf-option-group {
+    min-width: 0;
+}
+
+.pf-option-group h4 {
+    margin: 0 0 8px;
+    color: var(--pf-text);
+    font-size: 13px;
+    font-weight: 800;
+}
+
+.pf-option-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 7px;
+}
+
+.pf-option-item {
+    min-width: 0;
+    min-height: 40px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 9px;
+    border: 1px solid var(--pf-border);
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--pf-bg) 55%, transparent);
+    color: var(--pf-text);
+    font-size: 12.5px;
+    line-height: 1.35;
+    cursor: pointer;
+}
+
+.pf-option-item input {
+    width: 17px;
+    height: 17px;
+    flex: 0 0 auto;
+    margin: 0;
+    accent-color: var(--pf-accent);
+}
+
+.pf-option-item:has(input:checked) {
+    border-color: color-mix(in srgb, var(--pf-accent) 38%, var(--pf-border));
+    background: color-mix(in srgb, var(--pf-accent) 10%, var(--pf-bg));
+}
+
+.pf-option-item:has(input:disabled) {
+    cursor: default;
+}
+
 .pf-book-list {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -400,6 +479,11 @@ html.pf-modal-open body {
     white-space: nowrap;
 }
 
+.pf-persona-badge {
+    background: color-mix(in srgb, #d5a94a 18%, transparent);
+    color: color-mix(in srgb, #d5a94a 86%, var(--pf-text));
+}
+
 .pf-inline-note {
     margin-top: 9px;
     padding: 8px 10px;
@@ -416,6 +500,68 @@ html.pf-modal-open body {
 
 .pf-result-head {
     align-items: center;
+}
+
+.pf-candidate-panel {
+    margin-bottom: 12px;
+    padding: 11px;
+    border: 1px solid var(--pf-border);
+    border-radius: 12px;
+    background: color-mix(in srgb, var(--pf-bg) 55%, transparent);
+}
+
+.pf-candidate-head,
+.pf-output-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+}
+
+.pf-name-candidates {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 7px;
+    margin-top: 9px;
+}
+
+.pf-name-button,
+.pf-format-button {
+    min-height: 36px;
+    padding: 7px 11px;
+    border: 1px solid var(--pf-border);
+    border-radius: 999px;
+    background: transparent;
+    color: var(--pf-text);
+    font: inherit;
+    font-size: 12.5px;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+.pf-name-button.is-active,
+.pf-format-button.is-active {
+    border-color: color-mix(in srgb, var(--pf-accent) 55%, transparent);
+    background: color-mix(in srgb, var(--pf-accent) 18%, transparent);
+    color: var(--pf-text);
+}
+
+.pf-output-toolbar {
+    margin: 0 0 12px;
+}
+
+.pf-format-toggle {
+    display: inline-flex;
+    gap: 5px;
+    padding: 3px;
+    border: 1px solid var(--pf-border);
+    border-radius: 999px;
+}
+
+.pf-format-button {
+    min-height: 32px;
+    padding: 5px 10px;
+    border-color: transparent;
 }
 
 .pf-copy-button {
@@ -477,6 +623,15 @@ html.pf-modal-open body {
     padding: 13px 18px;
     border-top: 1px solid var(--pf-border);
     background: var(--pf-bg);
+}
+
+.pf-footer:has(#pf-cancel:not([hidden])) {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.pf-cancel-button {
+    border-color: color-mix(in srgb, #d35f5f 55%, var(--pf-border));
+    color: color-mix(in srgb, #d35f5f 82%, var(--pf-text));
 }
 
 .pf-primary-button,
@@ -552,6 +707,10 @@ html.pf-modal-open body {
     .pf-book-list {
         grid-template-columns: 1fr;
     }
+
+    .pf-option-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
 }
 
 /* Phone layout: true single-column sheet rather than a shrunk desktop modal. */
@@ -604,7 +763,8 @@ html.pf-modal-open body {
     }
 
     .pf-status-grid,
-    .pf-grid-2 {
+    .pf-grid-2,
+    .pf-grid-3 {
         grid-template-columns: 1fr;
     }
 
@@ -642,6 +802,21 @@ html.pf-modal-open body {
         grid-template-columns: 1fr 1fr;
     }
 
+    .pf-preset-toolbar {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+    }
+
+    .pf-option-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .pf-candidate-head,
+    .pf-output-toolbar {
+        align-items: flex-start;
+        flex-wrap: wrap;
+    }
+
     .pf-mini-button {
         min-height: 42px;
     }
@@ -669,6 +844,15 @@ html.pf-modal-open body {
             calc(10px + env(safe-area-inset-left));
         grid-template-columns: .85fr 1.15fr;
         gap: 8px;
+    }
+
+    .pf-footer:has(#pf-cancel:not([hidden])) {
+        grid-template-columns: 1fr 1fr;
+    }
+
+    .pf-footer:has(#pf-cancel:not([hidden])) #pf-cancel {
+        grid-column: 1 / -1;
+        grid-row: 1;
     }
 
     .pf-primary-button,
@@ -707,6 +891,10 @@ html.pf-modal-open body {
 
     .pf-copy-button {
         width: 100%;
+    }
+
+    .pf-option-grid {
+        grid-template-columns: 1fr;
     }
 }
 

@@ -6,8 +6,8 @@
   "js": "index.js",
   "css": "style.css",
   "author": "Persona Forge",
-  "version": "0.1.0",
-  "homePage": "",
+  "version": "0.2.0",
+  "homePage": "https://github.com/puppyyoho/User-",
   "auto_update": false,
   "minimum_client_version": "1.18.0"
 }
