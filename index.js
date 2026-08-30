@@ -18,7 +18,7 @@ import {
 const EXTENSION_NAME = 'persona-forge';
 const DISPLAY_NAME = '嘎嘎人设生成器';
 const SETTINGS_KEY = 'personaForge';
-const VERSION = '0.3.0';
+const VERSION = '0.3.1';
 const MAX_LORE_CHARS_DEFAULT = 52000;
 
 const state = {
@@ -363,7 +363,7 @@ function createStaticUi() {
                         <input id="pf-stream-output" type="checkbox">
                         <span>
                             <strong>实时显示生成过程</strong>
-                            <small>Chat/Text Completion 或连接管理器支持时会边生成边显示，并显示实时字数与分片数；失败时会说明原因后回退。</small>
+                            <small>模型生成期间会持续显示实际收到的内容与分片数；接口不支持时会说明原因并回退普通生成。</small>
                         </span>
                     </label>
                     <button type="button" class="pf-content-jump" id="pf-jump-content">↓ 选择生成内容（可勾选）</button>
@@ -1316,6 +1316,18 @@ function cloneSettings(settings) {
     return { ...settings };
 }
 
+function getActiveTextCompletionPreset(ctx, settings) {
+    const presetName = settings?.preset;
+    if (!presetName || typeof ctx?.getPresetManager !== 'function') return null;
+    try {
+        const manager = ctx.getPresetManager('textgenerationwebui');
+        return manager?.getCompletionPresetByName?.(presetName) || null;
+    } catch (error) {
+        console.warn(`[${DISPLAY_NAME}] Could not read the active Text Completion preset.`, error);
+        return null;
+    }
+}
+
 function mergeStreamText(previous, next) {
     const value = String(next ?? '');
     if (!value) return previous;
@@ -1344,8 +1356,11 @@ function readableError(error) {
 }
 
 async function generateRawWithStreaming(ctx, { systemPrompt, prompt, maxTokens, onStatus, onChunk }) {
-    const connection = getConnectionManagerStreaming(ctx);
-    const currentApi = connection ? null : getCurrentApiStreaming(ctx);
+    // The selected Connection Manager profile is not necessarily the connection
+    // currently used by SillyTavern. Prefer the live main API and use a profile
+    // only when that API has no extension-safe streaming service.
+    const currentApi = getCurrentApiStreaming(ctx);
+    const connection = currentApi ? null : getConnectionManagerStreaming(ctx);
     if (!connection && !currentApi) return { supported: false, streamed: false, text: '' };
 
     const controller = new AbortController();
@@ -1354,7 +1369,10 @@ async function generateRawWithStreaming(ctx, { systemPrompt, prompt, maxTokens, 
     const startedAt = performance.now();
     onStatus?.({ phase: 'connecting', source, eventCount: 0, textLength: 0 });
     try {
-        const effectiveMaxTokens = Math.max(512, Math.ceil((Number(maxTokens) || 1000) * 1.35));
+        // Target Chinese character count is a writing instruction, not an API token limit.
+        // Current Chat/Text requests keep SillyTavern's validated response length; only the
+        // Connection Manager path still requires an explicit value from its public API.
+        const connectionMaxTokens = Math.max(256, Math.floor(Number(maxTokens) || 1000));
         let response;
 
         if (connection) {
@@ -1365,7 +1383,7 @@ async function generateRawWithStreaming(ctx, { systemPrompt, prompt, maxTokens, 
             response = await connection.service.sendRequest(
                 connection.profileId,
                 messages,
-                effectiveMaxTokens,
+                connectionMaxTokens,
                 {
                     stream: true,
                     signal: controller.signal,
@@ -1375,31 +1393,43 @@ async function generateRawWithStreaming(ctx, { systemPrompt, prompt, maxTokens, 
                 },
             );
         } else if (currentApi.api === 'chat') {
-            const settings = cloneSettings(currentApi.settings);
-            settings.openai_max_tokens = effectiveMaxTokens;
             const messages = [
                 ...(systemPrompt ? [{ role: 'system', content: systemPrompt }] : []),
                 { role: 'user', content: prompt },
             ];
-            const overridePayload = { messages, max_tokens: effectiveMaxTokens, stream: true };
+            const overridePayload = { messages, stream: true };
             const payload = await currentApi.service.presetToGeneratePayload(
-                settings,
+                currentApi.settings,
                 {},
                 overridePayload,
             );
             response = await currentApi.service.sendRequest(payload, true, controller.signal);
         } else {
-            const settings = cloneSettings(currentApi.settings);
-            settings.streaming = true;
+            const activePreset = getActiveTextCompletionPreset(ctx, currentApi.settings);
+            const settings = cloneSettings(activePreset || currentApi.settings);
             const finalPrompt = [systemPrompt, prompt].filter(Boolean).join('\n\n');
+            const overridePayload = {
+                prompt: finalPrompt,
+                stream: true,
+            };
+            if (!activePreset) {
+                // Older SillyTavern builds may not expose the preset manager. Preserve
+                // their current setting where possible instead of inflating it from word count.
+                const configuredLimit = Number(
+                    settings.genamt
+                    ?? settings.max_new_tokens
+                    ?? settings.max_tokens
+                    ?? document.querySelector('#amount_gen')?.value,
+                );
+                if (Number.isFinite(configuredLimit) && configuredLimit > 0) {
+                    overridePayload.max_tokens = Math.floor(configuredLimit);
+                    overridePayload.max_new_tokens = Math.floor(configuredLimit);
+                }
+            }
             const payload = currentApi.service.presetToGeneratePayload(
                 settings,
                 {},
-                {
-                    prompt: finalPrompt,
-                    max_tokens: effectiveMaxTokens,
-                    stream: true,
-                },
+                overridePayload,
             );
             response = await currentApi.service.sendRequest(payload, true, controller.signal);
         }

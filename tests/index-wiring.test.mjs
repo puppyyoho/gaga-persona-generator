@@ -12,7 +12,7 @@ const staticIdSet = new Set(ids);
 const queriedIds = [
     ...indexSource.matchAll(/querySelector\(['"]#([A-Za-z0-9_-]+)['"]\)/g),
 ].map(match => match[1]);
-const dynamicIds = new Set(['pf-overlay', 'pf-settings', 'pf-fab', 'extensions_settings2', 'extensions_settings']);
+const dynamicIds = new Set(['pf-overlay', 'pf-settings', 'pf-fab', 'extensions_settings2', 'extensions_settings', 'amount_gen']);
 const missingIds = [...new Set(queriedIds)].filter(id => !staticIdSet.has(id) && !dynamicIds.has(id));
 assert.deepEqual(missingIds, [], 'A queried UI ID is missing from the static template');
 
@@ -41,5 +41,8 @@ assert.match(indexSource, /mainApi === 'textgenerationwebui'/);
 assert.match(indexSource, /updateCount > 1/);
 assert.match(indexSource, /scrollStreamingResultIntoView/);
 assert.match(indexSource, /setStreamingFallbackPreview/);
+assert.match(indexSource, /const currentApi = getCurrentApiStreaming\(ctx\)/);
+assert.match(indexSource, /Target Chinese character count is a writing instruction, not an API token limit/);
+assert.doesNotMatch(indexSource, /renderCurrentResultProgressively/);
 
 console.log('index wiring ok');
