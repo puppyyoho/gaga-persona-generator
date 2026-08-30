@@ -1,6 +1,21 @@
+import {
+    SECTION_GROUPS,
+    SECTION_PRESETS,
+    buildNameRerollPrompt,
+    buildPersonaGenerationPrompt,
+    buildPersonaSystemPrompt,
+    createDefaultSectionSelection,
+    getSelectedSections,
+    neutralizePersonaReferences,
+    normalizeNameCandidates,
+    normalizeStructuredResult,
+    parseStructuredResponse,
+    renderStructuredResult,
+} from './persona-data.js';
+
 const EXTENSION_NAME = 'persona-forge';
 const SETTINGS_KEY = 'personaForge';
-const VERSION = '0.1.0';
+const VERSION = '0.2.0';
 const MAX_LORE_CHARS_DEFAULT = 52000;
 
 const state = {
@@ -10,10 +25,14 @@ const state = {
     worldInfoRuntime: null,
     allWorldNames: [],
     activeWorldNames: [],
+    personaWorldNames: [],
     selectedWorldNames: new Set(),
     embeddedBook: null,
     lastContextSignature: '',
     generating: false,
+    generationEpoch: 0,
+    structuredResult: null,
+    selectedCandidateIndex: 0,
 };
 
 function getContext() {
@@ -138,17 +157,20 @@ async function detectWorldBooks() {
     // 4) Current chat lorebook.
     active.push(...normalizeArray(ctx.chatMetadata?.world_info));
 
-    // 5) Current Persona lorebook.
-    active.push(...normalizeArray(ctx.powerUserSettings?.persona_description_lorebook));
+    // Current Persona lorebooks are detected but intentionally not selected by default.
+    // This prevents the active User identity from contaminating a newly generated Persona.
+    const personaWorlds = normalizeArray(ctx.powerUserSettings?.persona_description_lorebook);
 
     state.allWorldNames = unique(allWorldNames);
     state.activeWorldNames = unique(active).filter(name => state.allWorldNames.length === 0 || state.allWorldNames.includes(name));
+    state.personaWorldNames = unique(personaWorlds).filter(name => state.allWorldNames.length === 0 || state.allWorldNames.includes(name));
     state.embeddedBook = getEmbeddedCharacterBook(character);
 
     // On first context load, default to active books. Preserve manual user selection afterward.
     const signature = JSON.stringify({
         character: getCharacterName(character),
         active: state.activeWorldNames,
+        persona: state.personaWorldNames,
         all: state.allWorldNames,
         embedded: Boolean(state.embeddedBook),
     });
@@ -161,6 +183,7 @@ async function detectWorldBooks() {
     return {
         all: state.allWorldNames,
         active: state.activeWorldNames,
+        persona: state.personaWorldNames,
         embedded: state.embeddedBook,
     };
 }
@@ -168,14 +191,37 @@ async function detectWorldBooks() {
 function ensureSettings() {
     const ctx = getContext();
     const root = ctx.extensionSettings;
-    if (!root[SETTINGS_KEY]) {
-        root[SETTINGS_KEY] = {
-            showFloatingButton: true,
-            maxLoreChars: MAX_LORE_CHARS_DEFAULT,
-            lastResult: '',
-            lastMode: 'random',
-            lastStyle: 'balanced',
-        };
+    const defaults = {
+        showFloatingButton: true,
+        maxLoreChars: MAX_LORE_CHARS_DEFAULT,
+        lastResult: '',
+        lastStructuredResult: null,
+        lastMode: 'random',
+        lastStyle: 'balanced',
+        lastOutputFormat: 'natural',
+        lastSelectedCandidateIndex: 0,
+        gender: 'random',
+        species: 'random',
+        speciesDetail: '',
+        nameCount: 5,
+        sectionSelection: createDefaultSectionSelection(),
+    };
+    const current = root[SETTINGS_KEY] && typeof root[SETTINGS_KEY] === 'object'
+        ? root[SETTINGS_KEY]
+        : {};
+    const mergedSections = {
+        ...defaults.sectionSelection,
+        ...(current.sectionSelection && typeof current.sectionSelection === 'object' ? current.sectionSelection : {}),
+        identity: true,
+    };
+    const migrated = {
+        ...defaults,
+        ...current,
+        sectionSelection: mergedSections,
+    };
+    const changed = JSON.stringify(current) !== JSON.stringify(migrated);
+    root[SETTINGS_KEY] = migrated;
+    if (changed) {
         ctx.saveSettingsDebounced?.();
     }
     return root[SETTINGS_KEY];
@@ -241,7 +287,7 @@ function createStaticUi() {
                         <button type="button" class="pf-segment" data-mode="directed" role="radio" aria-checked="false">🎯 定向生成</button>
                     </div>
 
-                    <div class="pf-grid pf-grid-2 pf-top-gap">
+                    <div class="pf-grid pf-grid-3 pf-top-gap">
                         <label class="pf-field">
                             <span>生成倾向</span>
                             <select id="pf-style">
@@ -252,6 +298,38 @@ function createStaticUi() {
                             </select>
                         </label>
                         <label class="pf-field">
+                            <span>性别</span>
+                            <select id="pf-gender">
+                                <option value="random">随机</option>
+                                <option value="男">男</option>
+                                <option value="女">女</option>
+                                <option value="双性">双性</option>
+                            </select>
+                        </label>
+                        <label class="pf-field">
+                            <span>种族</span>
+                            <select id="pf-species">
+                                <option value="random">随机</option>
+                                <option value="human">人类</option>
+                                <option value="nonhuman">人外</option>
+                            </select>
+                        </label>
+                    </div>
+
+                    <div class="pf-grid pf-grid-2">
+                        <label class="pf-field" id="pf-species-detail-field" hidden>
+                            <span>具体种族 <small>留空则跟随世界观</small></span>
+                            <input id="pf-species-detail" type="text" autocomplete="off" placeholder="例如：狐族兽人、吸血鬼、机器人">
+                        </label>
+                        <label class="pf-field">
+                            <span>候选姓名数量</span>
+                            <select id="pf-name-count">
+                                <option value="3">3 个</option>
+                                <option value="5">5 个</option>
+                                <option value="7">7 个</option>
+                            </select>
+                        </label>
+                        <label class="pf-field pf-field-wide">
                             <span>附加要求 <small>随机模式也可填写</small></span>
                             <input id="pf-extra-short" type="text" autocomplete="off" placeholder="例如：不要贵族、偏日常、年龄30岁左右">
                         </label>
@@ -260,8 +338,8 @@ function createStaticUi() {
                     <div id="pf-directed-fields" class="pf-directed-fields" hidden>
                         <div class="pf-grid pf-grid-2">
                             <label class="pf-field">
-                                <span>姓名</span>
-                                <input id="pf-name" type="text" autocomplete="off" placeholder="留空则由模型生成">
+                                <span>指定姓名 <small>填写后不生成候选名</small></span>
+                                <input id="pf-name" type="text" autocomplete="off" placeholder="留空则生成多个候选姓名">
                             </label>
                             <label class="pf-field">
                                 <span>关键词</span>
@@ -279,6 +357,22 @@ function createStaticUi() {
                     </div>
                 </section>
 
+                <details class="pf-card pf-details" id="pf-content-details" open>
+                    <summary>
+                        <span>生成内容</span>
+                        <small id="pf-section-count">0 项已选</small>
+                    </summary>
+                    <div class="pf-detail-body">
+                        <div class="pf-preset-toolbar" aria-label="内容预设">
+                            <button class="pf-mini-button" type="button" data-preset="compact">精简</button>
+                            <button class="pf-mini-button is-active" type="button" data-preset="standard">标准</button>
+                            <button class="pf-mini-button" type="button" data-preset="story">剧情丰富</button>
+                            <button class="pf-mini-button" type="button" data-preset="custom">自定义</button>
+                        </div>
+                        <div id="pf-section-groups" class="pf-section-groups"></div>
+                    </div>
+                </details>
+
                 <details class="pf-card pf-details" id="pf-book-details">
                     <summary>
                         <span>世界书范围</span>
@@ -294,6 +388,7 @@ function createStaticUi() {
                         </div>
                         <div id="pf-book-list" class="pf-book-list"></div>
                         <div class="pf-inline-note" id="pf-embedded-note" hidden>✓ 当前角色卡还包含内嵌 Character Book，将自动读取。</div>
+                        <div class="pf-inline-note" id="pf-persona-book-note" hidden>检测到当前 Persona 绑定的世界书，默认不勾选，避免沿用当前 User 身份。</div>
                     </div>
                 </details>
 
@@ -305,6 +400,20 @@ function createStaticUi() {
                         </div>
                         <button type="button" class="pf-copy-button" id="pf-copy" disabled>⧉ 一键复制</button>
                     </div>
+                    <div class="pf-candidate-panel" id="pf-candidate-panel" hidden>
+                        <div class="pf-candidate-head">
+                            <span class="pf-label-mini">候选姓名</span>
+                            <button class="pf-mini-button" type="button" id="pf-reroll-names">换一批名字</button>
+                        </div>
+                        <div class="pf-name-candidates" id="pf-name-candidates"></div>
+                    </div>
+                    <div class="pf-output-toolbar" id="pf-output-toolbar">
+                        <span class="pf-label-mini">输出格式</span>
+                        <div class="pf-format-toggle" role="radiogroup" aria-label="输出格式">
+                            <button type="button" class="pf-format-button" data-format="yaml" role="radio" aria-checked="false">YAML</button>
+                            <button type="button" class="pf-format-button is-active" data-format="natural" role="radio" aria-checked="true">自然语言</button>
+                        </div>
+                    </div>
                     <div class="pf-empty" id="pf-empty">还没有生成内容。</div>
                     <pre class="pf-result" id="pf-result" tabindex="0" hidden></pre>
                 </section>
@@ -312,6 +421,7 @@ function createStaticUi() {
 
             <footer class="pf-footer">
                 <button class="pf-secondary-button" type="button" id="pf-regenerate" disabled>↻ 再生成一次</button>
+                <button class="pf-secondary-button pf-cancel-button" type="button" id="pf-cancel" hidden>停止生成</button>
                 <button class="pf-primary-button" type="button" id="pf-generate">✨ 生成人设</button>
             </footer>
         </section>
@@ -321,6 +431,7 @@ function createStaticUi() {
     state.overlay = overlay;
     state.panel = overlay.querySelector('.pf-modal');
 
+    renderSectionOptions();
     bindUiEvents();
 }
 
@@ -381,6 +492,146 @@ function updateFloatingButton() {
     }
 }
 
+function renderSectionOptions() {
+    const root = state.overlay;
+    const container = root?.querySelector('#pf-section-groups');
+    if (!container) return;
+    const settings = ensureSettings();
+    container.replaceChildren();
+
+    for (const group of SECTION_GROUPS) {
+        const section = document.createElement('section');
+        section.className = 'pf-option-group';
+
+        const title = document.createElement('h4');
+        title.textContent = group.label;
+        section.appendChild(title);
+
+        const grid = document.createElement('div');
+        grid.className = 'pf-option-grid';
+
+        for (const option of group.sections) {
+            const label = document.createElement('label');
+            label.className = 'pf-option-item';
+
+            const input = document.createElement('input');
+            input.type = 'checkbox';
+            input.dataset.sectionId = option.id;
+            input.checked = option.required || Boolean(settings.sectionSelection[option.id]);
+            input.disabled = Boolean(option.required);
+
+            const text = document.createElement('span');
+            text.textContent = option.label;
+            label.append(input, text);
+            grid.appendChild(label);
+
+            input.addEventListener('change', () => {
+                settings.sectionSelection[option.id] = input.checked;
+                markPreset('custom');
+                updateSectionCount();
+                saveSettings();
+            });
+        }
+
+        section.appendChild(grid);
+        container.appendChild(section);
+    }
+
+    updateSectionCount();
+    detectAndMarkPreset();
+}
+
+function getCurrentSectionSelection() {
+    const settings = ensureSettings();
+    const selection = { ...settings.sectionSelection, identity: true };
+    state.overlay?.querySelectorAll('[data-section-id]').forEach(input => {
+        selection[input.dataset.sectionId] = input.checked;
+    });
+    return selection;
+}
+
+function updateSectionCount() {
+    const count = getSelectedSections(getCurrentSectionSelection()).length;
+    const target = state.overlay?.querySelector('#pf-section-count');
+    if (target) target.textContent = count + ' 项已选';
+}
+
+function markPreset(preset) {
+    state.overlay?.querySelectorAll('[data-preset]').forEach(button => {
+        button.classList.toggle('is-active', button.dataset.preset === preset);
+    });
+}
+
+function detectAndMarkPreset() {
+    const selection = getCurrentSectionSelection();
+    const activeIds = Object.entries(selection).filter(([, active]) => active).map(([id]) => id).sort();
+    for (const [preset, ids] of Object.entries(SECTION_PRESETS)) {
+        const sorted = [...ids].sort();
+        if (JSON.stringify(activeIds) === JSON.stringify(sorted)) {
+            markPreset(preset);
+            return;
+        }
+    }
+    markPreset('custom');
+}
+
+function applySectionPreset(preset) {
+    if (preset === 'custom') {
+        markPreset('custom');
+        return;
+    }
+    const ids = new Set(SECTION_PRESETS[preset] || SECTION_PRESETS.standard);
+    const settings = ensureSettings();
+    state.overlay?.querySelectorAll('[data-section-id]').forEach(input => {
+        const checked = input.disabled || ids.has(input.dataset.sectionId);
+        input.checked = checked;
+        settings.sectionSelection[input.dataset.sectionId] = checked;
+    });
+    settings.sectionSelection.identity = true;
+    markPreset(preset);
+    updateSectionCount();
+    saveSettings();
+}
+
+function updateSpeciesDetailVisibility() {
+    const root = state.overlay;
+    const species = root?.querySelector('#pf-species')?.value;
+    const field = root?.querySelector('#pf-species-detail-field');
+    if (field) field.hidden = species !== 'nonhuman';
+}
+
+function setOutputFormat(format, persist = true) {
+    const valid = format === 'yaml' ? 'yaml' : 'natural';
+    state.overlay?.querySelectorAll('[data-format]').forEach(button => {
+        const active = button.dataset.format === valid;
+        button.classList.toggle('is-active', active);
+        button.setAttribute('aria-checked', String(active));
+    });
+    if (persist) {
+        ensureSettings().lastOutputFormat = valid;
+        saveSettings();
+    }
+    renderCurrentResult();
+}
+
+function syncControlsFromSettings() {
+    const root = state.overlay;
+    const settings = ensureSettings();
+    const values = {
+        '#pf-style': settings.lastStyle || 'balanced',
+        '#pf-gender': settings.gender || 'random',
+        '#pf-species': settings.species || 'random',
+        '#pf-species-detail': settings.speciesDetail || '',
+        '#pf-name-count': String(settings.nameCount || 5),
+    };
+    for (const [selector, value] of Object.entries(values)) {
+        const input = root?.querySelector(selector);
+        if (input) input.value = value;
+    }
+    updateSpeciesDetailVisibility();
+    setOutputFormat(settings.lastOutputFormat || 'natural', false);
+}
+
 function bindUiEvents() {
     const root = state.overlay;
     root.querySelector('#pf-close')?.addEventListener('click', closePanel);
@@ -392,7 +643,7 @@ function bindUiEvents() {
         if (event.key === 'Escape' && state.overlay?.classList.contains('is-open')) closePanel();
     });
 
-    root.querySelectorAll('.pf-segment').forEach(button => {
+    root.querySelectorAll('.pf-segment[data-mode]').forEach(button => {
         button.addEventListener('click', () => setMode(button.dataset.mode));
     });
 
@@ -400,10 +651,35 @@ function bindUiEvents() {
         ensureSettings().lastStyle = root.querySelector('#pf-style').value;
         saveSettings();
     });
+    root.querySelector('#pf-gender')?.addEventListener('change', event => {
+        ensureSettings().gender = event.target.value;
+        saveSettings();
+    });
+    root.querySelector('#pf-species')?.addEventListener('change', event => {
+        ensureSettings().species = event.target.value;
+        updateSpeciesDetailVisibility();
+        saveSettings();
+    });
+    root.querySelector('#pf-species-detail')?.addEventListener('change', event => {
+        ensureSettings().speciesDetail = event.target.value.trim();
+        saveSettings();
+    });
+    root.querySelector('#pf-name-count')?.addEventListener('change', event => {
+        ensureSettings().nameCount = Number(event.target.value) || 5;
+        saveSettings();
+    });
+    root.querySelectorAll('[data-preset]').forEach(button => {
+        button.addEventListener('click', () => applySectionPreset(button.dataset.preset));
+    });
+    root.querySelectorAll('[data-format]').forEach(button => {
+        button.addEventListener('click', () => setOutputFormat(button.dataset.format));
+    });
 
     root.querySelector('#pf-copy')?.addEventListener('click', copyCurrentResult);
     root.querySelector('#pf-generate')?.addEventListener('click', generatePersona);
     root.querySelector('#pf-regenerate')?.addEventListener('click', generatePersona);
+    root.querySelector('#pf-reroll-names')?.addEventListener('click', rerollNames);
+    root.querySelector('#pf-cancel')?.addEventListener('click', cancelGeneration);
     root.querySelector('#pf-select-active')?.addEventListener('click', () => {
         state.selectedWorldNames = new Set(state.activeWorldNames);
         renderWorldBookList();
@@ -426,7 +702,7 @@ function bindUiEvents() {
 function setMode(mode) {
     const valid = mode === 'directed' ? 'directed' : 'random';
     const root = state.overlay;
-    root.querySelectorAll('.pf-segment').forEach(button => {
+    root.querySelectorAll('.pf-segment[data-mode]').forEach(button => {
         const active = button.dataset.mode === valid;
         button.classList.toggle('is-active', active);
         button.setAttribute('aria-checked', String(active));
@@ -437,7 +713,7 @@ function setMode(mode) {
 }
 
 function currentMode() {
-    return state.overlay?.querySelector('.pf-segment.is-active')?.dataset.mode || 'random';
+    return state.overlay?.querySelector('.pf-segment[data-mode].is-active')?.dataset.mode || 'random';
 }
 
 async function openPanel() {
@@ -446,11 +722,20 @@ async function openPanel() {
 
     const settings = ensureSettings();
     setMode(settings.lastMode || 'random');
-    const style = state.overlay.querySelector('#pf-style');
-    if (style) style.value = settings.lastStyle || 'balanced';
+    syncControlsFromSettings();
+    renderSectionOptions();
 
-    const saved = String(settings.lastResult || '');
-    if (saved) setResult(saved, '上次生成结果');
+    if (settings.lastStructuredResult && typeof settings.lastStructuredResult === 'object') {
+        state.structuredResult = settings.lastStructuredResult;
+        state.selectedCandidateIndex = Math.min(
+            Number(settings.lastSelectedCandidateIndex) || 0,
+            Math.max(0, (state.structuredResult.candidates?.length || 1) - 1),
+        );
+        renderCurrentResult('上次生成结果');
+    } else {
+        const saved = String(settings.lastResult || '');
+        if (saved) setResult(saved, '上次生成结果');
+    }
 
     state.overlay.classList.add('is-open');
     state.overlay.setAttribute('aria-hidden', 'false');
@@ -476,12 +761,14 @@ async function refreshContextUi(force = false) {
     state.overlay.querySelector('#pf-character-name').textContent = getCharacterName(character);
     state.overlay.querySelector('#pf-context-line').textContent = character
         ? `已读取当前角色 · ${state.activeWorldNames.length} 个绑定/启用世界书${state.embeddedBook ? ' · 含卡内世界书' : ''}`
-        : '当前未选择单角色；仍可使用全局、聊天与 Persona 世界书生成。';
+        : '当前未选择单角色；仍可使用全局与聊天世界书生成。';
 
     renderActiveChips();
     renderWorldBookList();
     const embeddedNote = state.overlay.querySelector('#pf-embedded-note');
     embeddedNote.hidden = !state.embeddedBook;
+    const personaNote = state.overlay.querySelector('#pf-persona-book-note');
+    personaNote.hidden = state.personaWorldNames.length === 0;
 }
 
 function renderActiveChips() {
@@ -539,6 +826,11 @@ function renderWorldBookList() {
                 badge.className = 'pf-active-badge';
                 badge.textContent = '当前启用';
                 text.append(' ', badge);
+            } else if (state.personaWorldNames.includes(name)) {
+                const badge = document.createElement('small');
+                badge.className = 'pf-active-badge pf-persona-badge';
+                badge.textContent = '当前 Persona';
+                text.append(' ', badge);
             }
 
             label.append(checkbox, text);
@@ -566,7 +858,12 @@ function extractEntries(book, sourceName) {
             source: sourceName,
             index,
             comment: String(entry.comment ?? entry.name ?? '').trim(),
-            keys: unique([...(Array.isArray(entry.key) ? entry.key : []), ...(Array.isArray(entry.keysecondary) ? entry.keysecondary : [])]),
+            keys: unique([
+                ...(Array.isArray(entry.key) ? entry.key : []),
+                ...(Array.isArray(entry.keys) ? entry.keys : []),
+                ...(Array.isArray(entry.keysecondary) ? entry.keysecondary : []),
+                ...(Array.isArray(entry.secondary_keys) ? entry.secondary_keys : []),
+            ]),
             content: String(entry.content ?? '').trim(),
             constant: Boolean(entry.constant),
             order: Number(entry.order ?? entry.insertion_order ?? 0),
@@ -580,10 +877,28 @@ function entryToText(entry) {
     return `【世界书：${entry.source}${title}】${keys}\n${entry.content}`;
 }
 
-async function collectWorldLore() {
+function getContextBudgets() {
+    const ctx = getContext();
+    const maxContext = Number(ctx.maxContext) || 0;
+    if (!maxContext) {
+        return {
+            characterChars: 18000,
+            totalSafeChars: MAX_LORE_CHARS_DEFAULT + 22000,
+        };
+    }
+    return {
+        characterChars: Math.max(2500, Math.min(18000, Math.floor(maxContext * 0.32))),
+        totalSafeChars: Math.max(6000, Math.floor(maxContext * 0.8)),
+    };
+}
+
+async function collectWorldLore(characterContextLength = 0) {
     const ctx = getContext();
     const settings = ensureSettings();
-    const limit = Math.max(12000, Number(settings.maxLoreChars) || MAX_LORE_CHARS_DEFAULT);
+    const budgets = getContextBudgets();
+    const configuredLimit = Math.max(1500, Number(settings.maxLoreChars) || MAX_LORE_CHARS_DEFAULT);
+    const availableForLore = Math.max(1500, budgets.totalSafeChars - characterContextLength - 3500);
+    const limit = Math.min(configuredLimit, availableForLore);
     const entries = [];
     const failures = [];
 
@@ -609,7 +924,11 @@ async function collectWorldLore() {
     let included = 0;
     const blocks = [];
     for (const entry of entries) {
-        const text = entryToText(entry);
+        const text = neutralizePersonaReferences(
+            entryToText(entry),
+            ctx.name1,
+            getCharacterName(getCurrentCharacter(ctx)),
+        );
         if (usedChars + text.length > limit && blocks.length) continue;
         blocks.push(text.slice(0, Math.max(0, limit - usedChars)));
         usedChars += Math.min(text.length, Math.max(0, limit - usedChars));
@@ -628,10 +947,12 @@ async function collectWorldLore() {
 }
 
 function collectCharacterContext() {
-    const character = getCurrentCharacter();
+    const ctx = getContext();
+    const character = getCurrentCharacter(ctx);
     if (!character) return '当前未选择单角色。';
 
     const name = getCharacterName(character);
+    const maxChars = getContextBudgets().characterChars;
     const fields = [
         ['姓名', name],
         ['Description', getField(character, 'description')],
@@ -642,30 +963,42 @@ function collectCharacterContext() {
         ['Post-History Instructions', getField(character, 'post_history_instructions')],
     ].filter(([, value]) => value);
 
-    return fields.map(([label, value]) => `【${label}】\n${value}`).join('\n\n');
+    const blocks = fields.map(([label, value]) => {
+        const cleaned = neutralizePersonaReferences(value, ctx.name1, name);
+        return '【' + label + '】\n' + cleaned;
+    });
+    return blocks.join('\n\n').slice(0, maxChars);
 }
 
-function styleInstruction(style) {
-    const map = {
-        'balanced': '在世界观一致性、人物独立性和剧情可用性之间保持均衡。优先生成自然、可长期使用的人设。',
-        'world-first': '世界观一致性拥有最高优先级。身份、阶层、职业、能力、时代常识和资源条件必须严密符合设定。',
-        'dramatic': '在不破坏世界观事实的前提下，提高与当前角色发生剧情、冲突、合作或复杂关系的潜力，但不要强行制造狗血关系。',
-        'rare': '从世界观允许的小概率身份与经历中取材。可以特别，但必须能够解释其存在条件，禁止凭空添加设定体系。',
-    };
-    return map[style] || map.balanced;
-}
-
-function collectUserDirection() {
+function collectGenerationOptions() {
     const root = state.overlay;
     const mode = currentMode();
     const style = root.querySelector('#pf-style')?.value || 'balanced';
     const shortExtra = root.querySelector('#pf-extra-short')?.value?.trim() || '';
+    const gender = root.querySelector('#pf-gender')?.value || 'random';
+    const species = root.querySelector('#pf-species')?.value || 'random';
+    const speciesDetail = species === 'nonhuman'
+        ? root.querySelector('#pf-species-detail')?.value?.trim() || ''
+        : '';
+    const nameCount = Number(root.querySelector('#pf-name-count')?.value) || 5;
+    const sections = getSelectedSections(getCurrentSectionSelection());
+    const randomId = globalThis.crypto?.randomUUID?.() || String(Date.now()) + '-' + String(Math.random());
 
     if (mode === 'random') {
         return {
             mode,
             style,
-            text: `生成模式：完全随机\n附加要求：${shortExtra || '无'}\n随机扰动标识：${crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`}`,
+            gender,
+            species,
+            speciesDetail,
+            nameCount,
+            fixedName: '',
+            sections,
+            directionText: [
+                '生成模式：随机生成',
+                '附加要求：' + (shortExtra || '无'),
+                '随机扰动标识：' + randomId,
+            ].join('\n'),
         };
     }
 
@@ -677,23 +1010,20 @@ function collectUserDirection() {
     return {
         mode,
         style,
-        text: [
+        gender,
+        species,
+        speciesDetail,
+        nameCount: name ? 1 : nameCount,
+        fixedName: name,
+        sections,
+        directionText: [
             '生成模式：定向生成',
-            `姓名：${name || '未指定，可自行生成'}`,
-            `关键词：${keywords || '未指定'}`,
-            `锁定条件：${hard || '无'}`,
-            `附加要求：${[shortExtra, extra].filter(Boolean).join('；') || '无'}`,
+            '姓名：' + (name || '未指定，生成多个候选姓名'),
+            '关键词：' + (keywords || '未指定'),
+            '锁定条件：' + (hard || '无'),
+            '附加要求：' + ([shortExtra, extra].filter(Boolean).join('；') || '无'),
         ].join('\n'),
     };
-}
-
-function buildSystemPrompt() {
-    return `你是 SillyTavern 的 User Persona 设计器。你的任务是根据给定角色卡与世界书，生成一个原本就应该存在于该世界里的 {{user}}。\n\n规则：\n1. 世界书与角色卡中明确写出的事实视为硬事实。不得创造与其冲突的时代、地域、制度、种族、魔法、科技、组织、身份体系。\n2. 用户提供的“锁定条件”拥有最高优先级，除非它与硬事实直接冲突；发生冲突时，以最小改动方式兼容，并在正文末尾用“【设定兼容说明】”简短说明。\n3. 用户给出的姓名、年龄、职业、关系等明确条件不得擅自修改。关键词是强倾向。未指定部分可以创造。\n4. 当前角色仅是世界中的一个人物。生成的 {{user}} 必须拥有独立人生、社会关系、生活资源、判断与欲望，不能只是为了迎合 {{char}} 而存在。\n5. 可以设计与当前角色有剧情潜力的联系，但除非用户明确要求，不要自动套用恋人、宿敌、青梅竹马、血缘等强绑定关系。\n6. 财务、教育、职业、年龄与生活方式要互相匹配。特殊能力或特殊身份必须有世界观依据。\n7. 不读取也不推断当前聊天剧情。仅依据本次提供的角色卡、世界书和用户条件。\n8. 输出最终可直接粘贴进 SillyTavern Persona Description 的中文正文。不要输出 JSON，不要解释你的推理过程，不要用代码块。\n9. 根据世界类型自行调整字段。现代世界可写职业、教育、家庭、经济与日常；奇幻世界可改为种族、出身、阵营、能力体系等。不要为了凑模板硬填不适用字段。\n10. 内容应具体、有区分度、便于长期角色扮演。避免堆砌空泛形容词。`;
-}
-
-function buildGenerationPrompt(characterContext, lore, direction) {
-    const characterName = getCharacterName(getCurrentCharacter());
-    return `请生成一个 User Persona。\n\n【生成倾向】\n${styleInstruction(direction.style)}\n\n【当前角色卡】\n${characterContext}\n\n【当前世界书资料】\n${lore.text || '未读取到世界书正文。请只依据角色卡与用户条件生成，不要自行假设额外体系。'}\n\n【用户定向条件】\n${direction.text}\n\n【输出建议】\n请优先形成一份完整、自然的人设正文。通常可以包含：基本身份、外貌气质、性格与行为逻辑、成长与家庭、教育/职业或世界内等价身份、经济与资源、能力与限制、生活习惯、重要关系、与 ${characterName} 的已知或潜在关系、当前处境。世界观不适用的栏目自行删改。\n\n只输出最终 Persona 正文。`;
 }
 
 async function generatePersona() {
@@ -705,42 +1035,159 @@ async function generatePersona() {
     }
 
     state.generating = true;
+    const generationId = ++state.generationEpoch;
     setLoading(true);
 
     try {
         await refreshContextUi(false);
-        const lore = await collectWorldLore();
-        const direction = collectUserDirection();
+        const options = collectGenerationOptions();
         const characterContext = collectCharacterContext();
-        const prompt = buildGenerationPrompt(characterContext, lore, direction);
+        const lore = await collectWorldLore(characterContext.length);
+        const prompt = buildPersonaGenerationPrompt({
+            options,
+            characterContext,
+            loreText: lore.text,
+        });
 
         const result = await ctx.generateRaw({
-            systemPrompt: buildSystemPrompt(),
+            systemPrompt: buildPersonaSystemPrompt(),
             prompt,
         });
 
-        const text = String(result ?? '').trim();
-        if (!text) throw new Error('模型返回了空内容。');
+        if (generationId !== state.generationEpoch) return;
+        const payload = parseStructuredResponse(result);
+        state.structuredResult = normalizeStructuredResult(payload, options, ctx.name1);
+        state.selectedCandidateIndex = 0;
 
         const notes = [];
-        notes.push(`已读取 ${lore.includedEntries}/${lore.totalEntries} 条世界书内容`);
+        notes.push('已读取 ' + lore.includedEntries + '/' + lore.totalEntries + ' 条世界书内容');
         if (lore.truncated) notes.push('世界书较大，已按广义规则优先截取');
-        if (lore.failures.length) notes.push(`${lore.failures.length} 个世界书读取失败`);
+        if (lore.failures.length) notes.push(lore.failures.length + ' 个世界书读取失败');
 
-        setResult(text, notes.join(' · '));
         const settings = ensureSettings();
-        settings.lastResult = text;
-        settings.lastMode = direction.mode;
-        settings.lastStyle = direction.style;
+        settings.lastStructuredResult = state.structuredResult;
+        settings.lastSelectedCandidateIndex = 0;
+        settings.lastResult = '';
+        settings.lastMode = options.mode;
+        settings.lastStyle = options.style;
+        settings.gender = options.gender;
+        settings.species = options.species;
+        settings.speciesDetail = options.speciesDetail;
+        settings.nameCount = options.nameCount;
+        settings.sectionSelection = getCurrentSectionSelection();
         saveSettings();
+        renderCurrentResult(notes.join(' · '));
     } catch (error) {
+        if (generationId !== state.generationEpoch) return;
         console.error('[Persona Forge] Generation failed', error);
-        notify('error', `生成失败：${error?.message || error}`);
+        notify('error', '生成失败：' + (error?.message || error));
         setResultError(error?.message || String(error));
     } finally {
-        state.generating = false;
-        setLoading(false);
+        if (generationId === state.generationEpoch) {
+            state.generating = false;
+            setLoading(false);
+        }
     }
+}
+
+async function rerollNames() {
+    if (state.generating || !state.structuredResult) return;
+    if (state.structuredResult.options?.fixedName) {
+        notify('info', '当前使用的是指定姓名。');
+        return;
+    }
+
+    const ctx = getContext();
+    if (typeof ctx.generateRaw !== 'function') return;
+    const count = Number(state.structuredResult.options?.nameCount) || Number(ensureSettings().nameCount) || 5;
+    const generationId = ++state.generationEpoch;
+    state.generating = true;
+    setLoading(true);
+
+    try {
+        const result = await ctx.generateRaw({
+            systemPrompt: buildPersonaSystemPrompt(),
+            prompt: buildNameRerollPrompt(state.structuredResult, count),
+        });
+        if (generationId !== state.generationEpoch) return;
+        const payload = parseStructuredResponse(result);
+        const candidates = normalizeNameCandidates(payload, ctx.name1);
+        if (!candidates.length) throw new Error('模型没有返回新的候选姓名。');
+
+        state.structuredResult = {
+            ...state.structuredResult,
+            candidates,
+        };
+        state.selectedCandidateIndex = 0;
+        const settings = ensureSettings();
+        settings.lastStructuredResult = state.structuredResult;
+        settings.lastSelectedCandidateIndex = 0;
+        saveSettings();
+        renderCurrentResult('已更换候选姓名');
+    } catch (error) {
+        if (generationId !== state.generationEpoch) return;
+        console.error('[Persona Forge] Name reroll failed', error);
+        notify('error', '更换姓名失败：' + (error?.message || error));
+    } finally {
+        if (generationId === state.generationEpoch) {
+            state.generating = false;
+            setLoading(false);
+        }
+    }
+}
+
+function cancelGeneration() {
+    if (!state.generating) return;
+    state.generationEpoch += 1;
+    state.generating = false;
+    try {
+        getContext().stopGeneration?.();
+    } catch (error) {
+        console.warn('[Persona Forge] Could not stop the underlying request.', error);
+    }
+    setLoading(false);
+    notify('info', '已停止生成。');
+}
+
+function selectCandidate(index) {
+    if (!state.structuredResult?.candidates?.[index]) return;
+    state.selectedCandidateIndex = index;
+    const settings = ensureSettings();
+    settings.lastSelectedCandidateIndex = index;
+    saveSettings();
+    renderCurrentResult();
+}
+
+function renderCandidateButtons() {
+    const root = state.overlay;
+    const panel = root?.querySelector('#pf-candidate-panel');
+    const wrap = root?.querySelector('#pf-name-candidates');
+    if (!panel || !wrap) return;
+    const candidates = state.structuredResult?.candidates || [];
+    panel.hidden = candidates.length === 0;
+    wrap.replaceChildren();
+
+    candidates.forEach((candidate, index) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'pf-name-button';
+        button.classList.toggle('is-active', index === state.selectedCandidateIndex);
+        button.textContent = candidate.name;
+        if (candidate.style) button.title = candidate.style;
+        button.addEventListener('click', () => selectCandidate(index));
+        wrap.appendChild(button);
+    });
+
+    const reroll = root.querySelector('#pf-reroll-names');
+    if (reroll) reroll.hidden = Boolean(state.structuredResult?.options?.fixedName);
+}
+
+function renderCurrentResult(meta = '生成完成，可切换姓名和输出格式') {
+    if (!state.structuredResult) return;
+    const format = ensureSettings().lastOutputFormat || 'natural';
+    const text = renderStructuredResult(state.structuredResult, state.selectedCandidateIndex, format);
+    renderCandidateButtons();
+    setResult(text, meta);
 }
 
 function setLoading(loading) {
@@ -749,10 +1196,17 @@ function setLoading(loading) {
     const generate = root.querySelector('#pf-generate');
     const regenerate = root.querySelector('#pf-regenerate');
     const copy = root.querySelector('#pf-copy');
+    const cancel = root.querySelector('#pf-cancel');
+    const rerollNamesButton = root.querySelector('#pf-reroll-names');
 
     generate.disabled = loading;
     regenerate.disabled = loading || !root.querySelector('#pf-result')?.textContent?.trim();
     copy.disabled = loading || !root.querySelector('#pf-result')?.textContent?.trim();
+    if (cancel) cancel.hidden = !loading;
+    if (rerollNamesButton) rerollNamesButton.disabled = loading;
+    root.querySelectorAll('.pf-name-button, .pf-format-button').forEach(button => {
+        button.disabled = loading;
+    });
     generate.classList.toggle('is-loading', loading);
     generate.textContent = loading ? '正在生成…' : '✨ 生成人设';
     root.querySelector('.pf-modal')?.setAttribute('aria-busy', String(loading));
@@ -778,6 +1232,8 @@ function setResultError(message) {
     const empty = root.querySelector('#pf-empty');
     result.hidden = true;
     result.textContent = '';
+    const candidatePanel = root.querySelector('#pf-candidate-panel');
+    if (candidatePanel) candidatePanel.hidden = true;
     empty.hidden = false;
     empty.textContent = `生成失败：${message}`;
     root.querySelector('#pf-result-meta').textContent = '请检查当前 API 连接后重试。';
