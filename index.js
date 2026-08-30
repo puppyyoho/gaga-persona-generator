@@ -10,7 +10,6 @@ import {
     neutralizePersonaReferences,
     normalizeNameCandidates,
     normalizeStructuredResult,
-    materializeDesignSummary,
     parseStructuredResponse,
     resolveTargetLength,
     renderStructuredResult,
@@ -19,7 +18,7 @@ import {
 const EXTENSION_NAME = 'persona-forge';
 const DISPLAY_NAME = '嘎嘎人设生成器';
 const SETTINGS_KEY = 'personaForge';
-const VERSION = '0.2.5';
+const VERSION = '0.2.6';
 const MAX_LORE_CHARS_DEFAULT = 52000;
 
 const state = {
@@ -206,7 +205,6 @@ function ensureSettings() {
         lastMode: 'random',
         lastStyle: 'balanced',
         lastOutputFormat: 'natural',
-        includeSummary: false,
         streamOutput: true,
         lastSelectedCandidateIndex: 0,
         gender: 'random',
@@ -230,6 +228,8 @@ function ensureSettings() {
         ...current,
         sectionSelection: mergedSections,
     };
+    // Remove the retired optional summary setting from older installations.
+    delete migrated.includeSummary;
     const changed = JSON.stringify(current) !== JSON.stringify(migrated);
     root[SETTINGS_KEY] = migrated;
     if (changed) {
@@ -359,14 +359,7 @@ function createStaticUi() {
                             <input id="pf-extra-short" type="text" autocomplete="off" placeholder="例如：不要贵族、偏日常、年龄30岁左右">
                         </label>
                     </div>
-                    <label class="pf-summary-toggle" for="pf-include-summary">
-                        <input id="pf-include-summary" type="checkbox">
-                        <span>
-                            <strong>生成设定摘要</strong>
-                            <small>显示核心欲望、核心矛盾、行为驱动和剧情钩子；不会加入正文复制内容。</small>
-                        </span>
-                    </label>
-                    <label class="pf-summary-toggle" for="pf-stream-output">
+                    <label class="pf-option-toggle" for="pf-stream-output">
                         <input id="pf-stream-output" type="checkbox">
                         <span>
                             <strong>实时显示生成过程</strong>
@@ -450,13 +443,6 @@ function createStaticUi() {
                         </div>
                         <div class="pf-name-candidates" id="pf-name-candidates"></div>
                     </div>
-                    <details class="pf-summary-card" id="pf-design-summary" hidden>
-                        <summary>
-                            <span>设定摘要</span>
-                            <small>仅供参考，不会复制</small>
-                        </summary>
-                        <div class="pf-summary-body" id="pf-design-summary-body"></div>
-                    </details>
                     <div class="pf-output-toolbar" id="pf-output-toolbar">
                         <span class="pf-label-mini">输出格式</span>
                         <div class="pf-format-toggle" role="radiogroup" aria-label="输出格式">
@@ -833,8 +819,6 @@ function syncControlsFromSettings() {
         const input = root?.querySelector(selector);
         if (input) input.value = value;
     }
-    const summaryToggle = root?.querySelector('#pf-include-summary');
-    if (summaryToggle) summaryToggle.checked = Boolean(settings.includeSummary);
     const streamToggle = root?.querySelector('#pf-stream-output');
     if (streamToggle) streamToggle.checked = settings.streamOutput !== false;
     syncTargetLengthControl();
@@ -891,10 +875,6 @@ function bindUiEvents() {
     };
     root.querySelector('#pf-target-length')?.addEventListener('change', syncCustomTargetLength);
     root.querySelector('#pf-target-length')?.addEventListener('blur', syncCustomTargetLength);
-    root.querySelector('#pf-include-summary')?.addEventListener('change', event => {
-        ensureSettings().includeSummary = Boolean(event.target.checked);
-        saveSettings();
-    });
     root.querySelector('#pf-stream-output')?.addEventListener('change', event => {
         ensureSettings().streamOutput = Boolean(event.target.checked);
         saveSettings();
@@ -1219,7 +1199,6 @@ function collectGenerationOptions() {
     const nameCount = Number(root.querySelector('#pf-name-count')?.value) || 5;
     const lengthPreset = root.querySelector('#pf-length-preset')?.value || 'standard';
     const targetLength = syncTargetLengthControl();
-    const includeSummary = Boolean(root.querySelector('#pf-include-summary')?.checked);
     const streamOutput = Boolean(root.querySelector('#pf-stream-output')?.checked);
     const sections = getSelectedSections(getCurrentSectionSelection());
     const randomId = globalThis.crypto?.randomUUID?.() || String(Date.now()) + '-' + String(Math.random());
@@ -1234,7 +1213,6 @@ function collectGenerationOptions() {
             nameCount,
             lengthPreset,
             targetLength,
-            includeSummary,
             streamOutput,
             fixedName: '',
             sections,
@@ -1260,7 +1238,6 @@ function collectGenerationOptions() {
         nameCount: name ? 1 : nameCount,
         lengthPreset,
         targetLength,
-        includeSummary,
         streamOutput,
         fixedName: name,
         sections,
@@ -1416,7 +1393,6 @@ async function generatePersona() {
         settings.nameCount = options.nameCount;
         settings.lengthPreset = options.lengthPreset;
         settings.targetLength = options.targetLength;
-        settings.includeSummary = options.includeSummary;
         settings.streamOutput = options.streamOutput;
         settings.sectionSelection = getCurrentSectionSelection();
         saveSettings();
@@ -1533,49 +1509,11 @@ function renderCandidateButtons() {
     if (reroll) reroll.hidden = Boolean(state.structuredResult?.options?.fixedName);
 }
 
-function renderDesignSummary() {
-    const root = state.overlay;
-    const card = root?.querySelector('#pf-design-summary');
-    const body = root?.querySelector('#pf-design-summary-body');
-    if (!card || !body) return;
-    const summary = materializeDesignSummary(state.structuredResult, state.selectedCandidateIndex);
-    body.replaceChildren();
-    if (!summary || typeof summary !== 'object') {
-        card.hidden = true;
-        return;
-    }
-
-    for (const [label, value] of Object.entries(summary)) {
-        const row = document.createElement('div');
-        row.className = 'pf-summary-row';
-        const heading = document.createElement('strong');
-        heading.textContent = label;
-        row.appendChild(heading);
-
-        if (Array.isArray(value)) {
-            const list = document.createElement('ul');
-            for (const item of value) {
-                const li = document.createElement('li');
-                li.textContent = String(item);
-                list.appendChild(li);
-            }
-            row.appendChild(list);
-        } else {
-            const text = document.createElement('p');
-            text.textContent = String(value);
-            row.appendChild(text);
-        }
-        body.appendChild(row);
-    }
-    card.hidden = body.childElementCount === 0;
-}
-
 function renderCurrentResult(meta = '生成完成，可切换姓名和输出格式') {
     if (!state.structuredResult) return;
     const format = ensureSettings().lastOutputFormat || 'natural';
     const text = renderStructuredResult(state.structuredResult, state.selectedCandidateIndex, format);
     renderCandidateButtons();
-    renderDesignSummary();
     setResult(text, meta);
 }
 
@@ -1615,7 +1553,6 @@ function setStreamingPreview(text = '') {
     root.querySelector('#pf-copy').disabled = true;
     root.querySelector('#pf-regenerate').disabled = true;
     root.querySelector('#pf-candidate-panel').hidden = true;
-    root.querySelector('#pf-design-summary').hidden = true;
 }
 
 function setResult(text, meta = '生成完成') {
@@ -1640,8 +1577,6 @@ function setResultError(message) {
     result.textContent = '';
     const candidatePanel = root.querySelector('#pf-candidate-panel');
     if (candidatePanel) candidatePanel.hidden = true;
-    const summaryCard = root.querySelector('#pf-design-summary');
-    if (summaryCard) summaryCard.hidden = true;
     empty.hidden = false;
     empty.textContent = `生成失败：${message}`;
     root.querySelector('#pf-result-meta').textContent = '请检查当前 API 连接后重试。';

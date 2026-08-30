@@ -220,26 +220,6 @@ export function buildPersonaGenerationPrompt(input) {
         profile: createProfileShape(labels),
     };
 
-    const summaryInstruction = options.includeSummary
-        ? [
-            '【设定摘要】',
-            '额外输出顶层 design_summary 对象，只写最终设定的简短结论，不展示分析过程。',
-            '必须包含四个键：核心欲望、核心矛盾、行为驱动、剧情钩子。总长度约 80～150 字；剧情钩子可以是 1～3 条短句。',
-            '',
-        ]
-        : [
-            '不要输出 design_summary 或其他未要求的顶层字段。',
-            '',
-        ];
-    if (options.includeSummary) {
-        example.design_summary = {
-            核心欲望: '角色最想得到或守住的东西',
-            核心矛盾: '角色想要什么，以及什么在阻碍它',
-            行为驱动: '角色通常如何做选择',
-            剧情钩子: ['可以推动后续剧情的未决问题或关系'],
-        };
-    }
-
     return [
         '请生成一个新的 User Persona。',
         '',
@@ -274,7 +254,6 @@ export function buildPersonaGenerationPrompt(input) {
         '- 关系网络使用对象数组，每个 NPC 至少包含姓名、身份、关系、当前状态和自然的互动方式。',
         '- 内容具体、有区分度、能直接用于长期角色扮演，避免空泛形容词。',
         '- 输出必须可以被 JSON.parse() 直接解析。',
-        ...summaryInstruction,
         '',
         '严格使用以下 JSON 结构：',
         JSON.stringify(example, null, 2),
@@ -345,43 +324,6 @@ function normalizeCandidate(candidate) {
     };
 }
 
-const DESIGN_SUMMARY_KEYS = new Map([
-    ['核心欲望', '核心欲望'],
-    ['coreDesire', '核心欲望'],
-    ['核心矛盾', '核心矛盾'],
-    ['coreConflict', '核心矛盾'],
-    ['行为驱动', '行为驱动'],
-    ['behaviorDriver', '行为驱动'],
-    ['剧情钩子', '剧情钩子'],
-    ['plotHooks', '剧情钩子'],
-]);
-
-function normalizeSummaryValue(value) {
-    if (Array.isArray(value)) {
-        return value
-            .map(item => String(item ?? '').trim())
-            .filter(Boolean)
-            .slice(0, 3)
-            .map(item => item.slice(0, 240));
-    }
-    const text = String(value ?? '').trim();
-    return text ? text.slice(0, 500) : '';
-}
-
-function normalizeDesignSummary(raw) {
-    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
-    const summary = {};
-    for (const [key, value] of Object.entries(raw)) {
-        const normalizedKey = DESIGN_SUMMARY_KEYS.get(key);
-        if (!normalizedKey) continue;
-        const normalizedValue = normalizeSummaryValue(value);
-        if ((Array.isArray(normalizedValue) && normalizedValue.length) || (typeof normalizedValue === 'string' && normalizedValue)) {
-            summary[normalizedKey] = normalizedValue;
-        }
-    }
-    return Object.keys(summary).length ? summary : null;
-}
-
 function mapStrings(value, mapper) {
     if (typeof value === 'string') return mapper(value);
     if (Array.isArray(value)) return value.map(item => mapStrings(item, mapper));
@@ -441,10 +383,6 @@ export function normalizeStructuredResult(payload, options, currentUserName) {
     if (!Object.keys(profile).length) profile = rawProfile;
     removeNameFields(profile);
 
-    const designSummary = normalizeDesignSummary(
-        payload.design_summary ?? payload.designSummary ?? payload.设定摘要,
-    );
-
     const identity = profile.基本身份;
     if (identity && typeof identity === 'object' && !Array.isArray(identity)) {
         if (options.gender !== 'random') identity.性别 = options.gender;
@@ -467,21 +405,10 @@ export function normalizeStructuredResult(payload, options, currentUserName) {
         return text;
     });
 
-    const normalizedSummary = designSummary
-        ? mapStrings(designSummary, value => {
-            let text = value;
-            for (const name of replacements) {
-                if (name) text = text.split(name).join(PERSONA_NAME_TOKEN);
-            }
-            return text;
-        })
-        : null;
-
     return {
         version: 1,
         candidates,
         profile,
-        designSummary: normalizedSummary,
         options: {
             gender: options.gender,
             species: options.species,
@@ -489,7 +416,6 @@ export function normalizeStructuredResult(payload, options, currentUserName) {
             nameCount: options.nameCount,
             lengthPreset: options.lengthPreset || 'standard',
             targetLength: resolveTargetLength(options.lengthPreset, options.targetLength),
-            includeSummary: Boolean(options.includeSummary),
             fixedName: options.fixedName,
             sectionIds: options.sections.map(section => section.id),
         },
@@ -514,14 +440,6 @@ export function normalizeNameCandidates(payload, forbiddenName = '') {
 
 function materialize(value, name) {
     return mapStrings(value, text => text.split(PERSONA_NAME_TOKEN).join(name));
-}
-
-export function materializeDesignSummary(structuredResult, candidateIndex = 0) {
-    const candidates = structuredResult?.candidates || [];
-    const safeIndex = Math.min(Math.max(Number(candidateIndex) || 0, 0), Math.max(0, candidates.length - 1));
-    const candidate = candidates[safeIndex] || { name: '未命名 Persona' };
-    if (!structuredResult?.designSummary) return null;
-    return materialize(structuredResult.designSummary, candidate.name);
 }
 
 function isEmpty(value) {
