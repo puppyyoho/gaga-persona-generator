@@ -75,6 +75,20 @@ export const SECTION_PRESETS = {
     story: STORY_IDS,
 };
 
+export const LENGTH_PRESETS = {
+    concise: { label: '精简', targetLength: 600 },
+    standard: { label: '标准', targetLength: 1000 },
+    detailed: { label: '详细', targetLength: 1800 },
+    extensive: { label: '超详细', targetLength: 2800 },
+};
+
+export function resolveTargetLength(preset, value) {
+    if (preset !== 'custom') return LENGTH_PRESETS[preset]?.targetLength || LENGTH_PRESETS.standard.targetLength;
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return LENGTH_PRESETS.standard.targetLength;
+    return Math.min(Math.max(Math.round(numeric), 300), 6000);
+}
+
 export function createDefaultSectionSelection() {
     const selected = {};
     for (const group of SECTION_GROUPS) {
@@ -169,6 +183,7 @@ function createProfileShape(sectionLabels) {
 export function buildPersonaGenerationPrompt(input) {
     const options = input.options;
     const labels = options.sections.map(section => section.label);
+    const targetLength = resolveTargetLength(options.lengthPreset, options.targetLength);
     const fixedNameLine = options.fixedName
         ? '指定姓名：' + options.fixedName + '。name_candidates 只能包含这个姓名。'
         : '生成 ' + options.nameCount + ' 个彼此有区分度、但都与同一份人设兼容的候选姓名。';
@@ -201,6 +216,9 @@ export function buildPersonaGenerationPrompt(input) {
         '',
         '【生成倾向】',
         styleInstruction(options.style),
+        '',
+        '【篇幅要求】',
+        '整份人设目标长度约 ' + targetLength + ' 字，可在上下 20% 范围内浮动。每个已选择栏目都要有具体内容，但不要用无意义的重复句填充字数。',
         '',
         '【姓名、性别与种族】',
         fixedNameLine,
@@ -387,6 +405,8 @@ export function normalizeStructuredResult(payload, options, currentUserName) {
             species: options.species,
             speciesDetail: options.speciesDetail,
             nameCount: options.nameCount,
+            lengthPreset: options.lengthPreset || 'standard',
+            targetLength: resolveTargetLength(options.lengthPreset, options.targetLength),
             fixedName: options.fixedName,
             sectionIds: options.sections.map(section => section.id),
         },
