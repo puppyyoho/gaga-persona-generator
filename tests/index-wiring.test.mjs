@@ -25,5 +25,9 @@ assert.match(indexSource, /pf-length-preset/);
 assert.match(indexSource, /pf-target-length/);
 assert.match(indexSource, /pf-content-jump/);
 assert.match(indexSource, /resolveTargetLength/);
+assert.match(indexSource, /floatingPosition/);
+assert.match(indexSource, /bindFloatingDrag/);
+assert.match(indexSource, /isPhoneViewport/);
+assert.match(indexSource, /pf-open-button/);
 
 console.log('index wiring ok');
