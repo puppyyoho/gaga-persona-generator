@@ -1,10 +1,10 @@
-# Persona Forge v0.2.0
+# 嘎嘎人设生成器 v0.2.1
 
 一个面向 SillyTavern 1.18.0+ 的世界观适配 User Persona 生成扩展。
 
-Persona Forge 会读取当前角色卡和用户选择的世界书，调用 SillyTavern 当前连接的模型，生成可直接复制到 Persona Description 的新身份。它不会读取当前聊天正文，也不需要额外填写 API Key。
+嘎嘎人设生成器会读取当前角色卡和用户选择的世界书，调用 SillyTavern 当前连接的模型，生成可直接复制到 Persona Description 的新身份。它不会读取当前聊天正文，也不需要额外填写 API Key。
 
-## v0.2.0 新功能
+## 当前版本功能
 
 - 修复当前已启用 User Persona 姓名污染新 Persona 的问题。
 - 当前 Persona 绑定的世界书仍会被识别，但默认不勾选。
@@ -74,7 +74,7 @@ Persona Forge 会读取当前角色卡和用户选择的世界书，调用 Silly
 ## 使用
 
 1. 进入某个角色聊天。
-2. 在 Extensions 设置中打开 Persona Forge，或点击右下方的悬浮按钮。
+2. 在 Extensions 设置中打开嘎嘎人设生成器，或点击右下方的悬浮按钮。
 3. 选择随机生成或定向生成。
 4. 选择性别、种族、候选姓名数量和生成倾向。
 5. 使用预设或逐项勾选想生成的内容。

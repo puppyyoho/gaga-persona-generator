@@ -1,12 +1,12 @@
 {
-  "display_name": "Persona Forge - 世界观适配 User 人设生成器",
+  "display_name": "嘎嘎人设生成器",
   "loading_order": 60,
   "requires": [],
   "optional": [],
   "js": "index.js",
   "css": "style.css",
   "author": "Persona Forge",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "homePage": "https://github.com/puppyyoho/User-",
   "auto_update": false,
   "minimum_client_version": "1.18.0"
