@@ -18,7 +18,7 @@ import {
 const EXTENSION_NAME = 'persona-forge';
 const DISPLAY_NAME = '嘎嘎人设生成器';
 const SETTINGS_KEY = 'personaForge';
-const VERSION = '0.2.2';
+const VERSION = '0.2.3';
 const MAX_LORE_CHARS_DEFAULT = 52000;
 
 const state = {
@@ -26,6 +26,7 @@ const state = {
     panel: null,
     settingsPanel: null,
     worldInfoRuntime: null,
+    floatingResizeBound: false,
     allWorldNames: [],
     activeWorldNames: [],
     personaWorldNames: [],
@@ -196,6 +197,7 @@ function ensureSettings() {
     const root = ctx.extensionSettings;
     const defaults = {
         showFloatingButton: true,
+        floatingPosition: null,
         maxLoreChars: MAX_LORE_CHARS_DEFAULT,
         lastResult: '',
         lastStructuredResult: null,
@@ -475,10 +477,10 @@ function createSettingsUi() {
             </div>
             <div class="inline-drawer-content">
                 <p>读取当前角色与世界书，调用当前 SillyTavern 模型生成适配世界观的 User Persona。</p>
-                <button type="button" class="menu_button" id="pf-open-settings">打开${DISPLAY_NAME}</button>
+                <button type="button" class="menu_button pf-open-button" id="pf-open-settings"><span aria-hidden="true">✨</span><span>打开${DISPLAY_NAME}</span></button>
                 <label class="checkbox_label pf-settings-check">
                     <input id="pf-show-fab" type="checkbox" ${settings.showFloatingButton ? 'checked' : ''}>
-                    <span>显示移动端友好的悬浮入口</span>
+                    <span>显示桌面悬浮入口（可拖动）</span>
                 </label>
             </div>
         </div>
@@ -491,6 +493,107 @@ function createSettingsUi() {
         settings.showFloatingButton = Boolean(event.target.checked);
         saveSettings();
         updateFloatingButton();
+    });
+}
+
+function isPhoneViewport() {
+    return window.matchMedia?.('(max-width: 600px)').matches ?? window.innerWidth <= 600;
+}
+
+function clampFloatingPosition(button, left, top) {
+    const rect = button.getBoundingClientRect();
+    const margin = 8;
+    const maxLeft = Math.max(margin, window.innerWidth - rect.width - margin);
+    const maxTop = Math.max(margin, window.innerHeight - rect.height - margin);
+    return {
+        left: Math.min(Math.max(margin, Number(left) || margin), maxLeft),
+        top: Math.min(Math.max(margin, Number(top) || margin), maxTop),
+    };
+}
+
+function setFloatingPosition(button, left, top, persist = false) {
+    const position = clampFloatingPosition(button, left, top);
+    button.style.left = `${position.left}px`;
+    button.style.top = `${position.top}px`;
+    button.style.right = 'auto';
+    button.style.bottom = 'auto';
+    if (persist) {
+        ensureSettings().floatingPosition = {
+            left: Math.round(position.left),
+            top: Math.round(position.top),
+        };
+        saveSettings();
+    }
+    return position;
+}
+
+function restoreFloatingPosition(button) {
+    const saved = ensureSettings().floatingPosition;
+    if (!saved || typeof saved !== 'object') return;
+    const left = Number(saved.left);
+    const top = Number(saved.top);
+    if (Number.isFinite(left) && Number.isFinite(top)) setFloatingPosition(button, left, top);
+}
+
+function constrainFloatingButton() {
+    const button = document.getElementById('pf-fab');
+    const saved = ensureSettings().floatingPosition;
+    if (!button || !saved || isPhoneViewport()) return;
+    const left = Number.parseFloat(button.style.left);
+    const top = Number.parseFloat(button.style.top);
+    if (Number.isFinite(left) && Number.isFinite(top)) setFloatingPosition(button, left, top, true);
+}
+
+function bindFloatingDrag(button) {
+    if (button.dataset.dragBound === 'true') return;
+    button.dataset.dragBound = 'true';
+    let drag = null;
+
+    button.addEventListener('pointerdown', event => {
+        if (event.pointerType === 'mouse' && event.button !== 0) return;
+        const rect = button.getBoundingClientRect();
+        drag = {
+            pointerId: event.pointerId,
+            startX: event.clientX,
+            startY: event.clientY,
+            left: rect.left,
+            top: rect.top,
+            moved: false,
+        };
+        setFloatingPosition(button, rect.left, rect.top);
+        button.classList.add('is-dragging');
+        button.setPointerCapture?.(event.pointerId);
+        event.preventDefault();
+    });
+
+    button.addEventListener('pointermove', event => {
+        if (!drag || event.pointerId !== drag.pointerId) return;
+        const deltaX = event.clientX - drag.startX;
+        const deltaY = event.clientY - drag.startY;
+        if (Math.hypot(deltaX, deltaY) > 4) drag.moved = true;
+        setFloatingPosition(button, drag.left + deltaX, drag.top + deltaY);
+        event.preventDefault();
+    });
+
+    const finishDrag = event => {
+        if (!drag || event.pointerId !== drag.pointerId) return;
+        if (button.hasPointerCapture?.(event.pointerId)) button.releasePointerCapture(event.pointerId);
+        button.classList.remove('is-dragging');
+        if (drag.moved) {
+            button.dataset.dragged = 'true';
+            setFloatingPosition(button, Number.parseFloat(button.style.left), Number.parseFloat(button.style.top), true);
+        }
+        drag = null;
+    };
+    button.addEventListener('pointerup', finishDrag);
+    button.addEventListener('pointercancel', finishDrag);
+    button.addEventListener('click', event => {
+        if (button.dataset.dragged === 'true') {
+            button.dataset.dragged = '';
+            event.preventDefault();
+            return;
+        }
+        openPanel();
     });
 }
 
@@ -507,11 +610,20 @@ function updateFloatingButton() {
         button.id = 'pf-fab';
         button.className = 'pf-fab';
         button.type = 'button';
-        button.title = `打开${DISPLAY_NAME}`;
-        button.setAttribute('aria-label', `打开${DISPLAY_NAME}`);
-        button.innerHTML = '<span aria-hidden="true">✨</span><span class="pf-fab-text">嘎嘎</span>';
-        button.addEventListener('click', openPanel);
+        button.title = `拖动调整位置，点击打开${DISPLAY_NAME}`;
+        button.setAttribute('aria-label', `打开${DISPLAY_NAME}（可拖动）`);
+        button.innerHTML = '<span class="pf-fab-grip" aria-hidden="true">⠿</span><span aria-hidden="true">✨</span><span class="pf-fab-text">嘎嘎</span>';
         document.body.appendChild(button);
+        restoreFloatingPosition(button);
+        bindFloatingDrag(button);
+    }
+    button.hidden = isPhoneViewport();
+    if (!state.floatingResizeBound) {
+        window.addEventListener('resize', () => {
+            updateFloatingButton();
+            constrainFloatingButton();
+        }, { passive: true });
+        state.floatingResizeBound = true;
     }
 }
 

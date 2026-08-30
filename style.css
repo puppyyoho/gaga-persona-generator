@@ -717,9 +717,22 @@ html.pf-modal-open body {
     box-shadow: 0 8px 28px rgba(0, 0, 0, .28);
     font-size: 14px;
     font-weight: 800;
-    cursor: pointer;
-    touch-action: manipulation;
+    cursor: grab;
+    user-select: none;
+    touch-action: none;
     -webkit-tap-highlight-color: transparent;
+}
+
+.pf-fab.is-dragging {
+    cursor: grabbing;
+    transform: scale(.96);
+    box-shadow: 0 10px 32px rgba(0, 0, 0, .36);
+}
+
+.pf-fab-grip {
+    opacity: .62;
+    font-size: 15px;
+    line-height: 1;
 }
 
 .pf-fab-text {
@@ -728,6 +741,40 @@ html.pf-modal-open body {
 
 .pf-settings-check {
     margin-top: 10px;
+}
+
+/* Keep the extension entry readable inside SillyTavern's narrow settings drawer. */
+#pf-open-settings.pf-open-button {
+    box-sizing: border-box;
+    width: 100%;
+    min-width: 220px;
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    padding: 9px 14px;
+    border: 1px solid color-mix(in srgb, var(--pf-accent, #8da2ff) 55%, transparent);
+    border-radius: 11px;
+    background: color-mix(in srgb, var(--pf-accent, #8da2ff) 13%, transparent);
+    color: var(--pf-text, inherit);
+    font: inherit;
+    font-weight: 750;
+    line-height: 1.25;
+    letter-spacing: 0;
+    text-align: center;
+    white-space: nowrap;
+    word-break: keep-all;
+    writing-mode: horizontal-tb;
+    text-orientation: mixed;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    cursor: pointer;
+    touch-action: manipulation;
+}
+
+#pf-open-settings.pf-open-button:hover {
+    background: color-mix(in srgb, var(--pf-accent, #8da2ff) 20%, transparent);
 }
 
 /* Tablet / narrow desktop */
@@ -899,16 +946,9 @@ html.pf-modal-open body {
         padding-inline: 10px;
     }
 
+    /* The settings drawer remains the mobile entry point; keep the floating control desktop-only. */
     .pf-fab {
-        right: max(8px, env(safe-area-inset-right));
-        bottom: calc(max(8px, env(safe-area-inset-bottom)) + 70px);
-        width: 48px;
-        min-width: 48px;
-        padding: 0;
-    }
-
-    .pf-fab-text {
-        display: none;
+        display: none !important;
     }
 }
 
