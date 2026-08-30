@@ -43,6 +43,10 @@ assert.match(indexSource, /scrollStreamingResultIntoView/);
 assert.match(indexSource, /setStreamingFallbackPreview/);
 assert.match(indexSource, /const currentApi = getCurrentApiStreaming\(ctx\)/);
 assert.match(indexSource, /Target Chinese character count is a writing instruction, not an API token limit/);
+assert.match(indexSource, /createGenerationParameters\(settings, model, 'normal', messages\)/);
+assert.match(indexSource, /CHAT_COMPLETION_SETTINGS_READY/);
+assert.match(indexSource, /TEXT_COMPLETION_SETTINGS_READY/);
+assert.match(indexSource, /throw new Error\(`\$\{source\} · \$\{detail\}`\)/);
 assert.doesNotMatch(indexSource, /renderCurrentResultProgressively/);
 
 console.log('index wiring ok');
