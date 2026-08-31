@@ -9,6 +9,7 @@ import {
     LENGTH_PRESETS,
     neutralizePersonaReferences,
     normalizeCustomSectionPresets,
+    normalizeLengthPreset,
     normalizeStructuredResult,
     parseStructuredResponse,
     renderStructuredResult,
@@ -80,6 +81,9 @@ assert.equal(
 );
 
 assert.equal(LENGTH_PRESETS.standard.targetLength, 1000);
+assert.equal(normalizeLengthPreset('custom'), 'custom');
+assert.equal(normalizeLengthPreset('extensive'), 'extensive');
+assert.equal(normalizeLengthPreset('unknown'), 'standard');
 assert.equal(resolveTargetLength('extensive', 1000), LENGTH_PRESETS.extensive.targetLength);
 assert.equal(resolveTargetLength('custom', 1299), 1299);
 assert.equal(resolveTargetLength('custom', 10000), 6000);

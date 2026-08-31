@@ -13,6 +13,7 @@ import {
     neutralizePersonaReferences,
     normalizeNameCandidates,
     normalizeCustomSectionPresets,
+    normalizeLengthPreset,
     normalizeStructuredResult,
     parseStructuredResponse,
     resolveTargetLength,
@@ -22,7 +23,7 @@ import {
 const EXTENSION_NAME = 'persona-forge';
 const DISPLAY_NAME = '嘎嘎人设生成器';
 const SETTINGS_KEY = 'personaForge';
-const VERSION = '0.6.6';
+const VERSION = '0.6.7';
 const FAB_ICON_URL = new URL('./icon.png', import.meta.url).href;
 const MAX_LORE_CHARS_DEFAULT = 52000;
 
@@ -233,6 +234,7 @@ function ensureSettings() {
         nameCount: 5,
         lengthPreset: 'standard',
         targetLength: LENGTH_PRESETS.standard.targetLength,
+        customTargetLength: LENGTH_PRESETS.standard.targetLength,
         sectionSelection: createDefaultSectionSelection(),
         customSectionPresets: [],
     };
@@ -248,6 +250,11 @@ function ensureSettings() {
     const migrated = {
         ...defaults,
         ...current,
+        lengthPreset: normalizeLengthPreset(current.lengthPreset),
+        customTargetLength: resolveTargetLength(
+            'custom',
+            current.customTargetLength ?? (current.lengthPreset === 'custom' ? current.targetLength : defaults.customTargetLength),
+        ),
         sectionSelection: mergedSections,
         customSectionPresets: normalizeCustomSectionPresets(current.customSectionPresets),
     };
@@ -407,8 +414,8 @@ function createStaticUi() {
                     <label class="pf-option-toggle" for="pf-reference-greeting">
                         <input id="pf-reference-greeting" type="checkbox">
                         <span>
-                            <strong>参考角色开场白</strong>
-                            <small id="pf-reference-greeting-status">开启后会从角色卡主开场白提取与 U 有关的关系、身份和初始处境，不读取后续聊天。</small>
+                            <strong>参考当前开场白</strong>
+                            <small id="pf-reference-greeting-status">优先读取当前聊天正在显示的第一条角色开场白；没有时读取角色卡默认开场白，不读取后续聊天。</small>
                         </span>
                     </label>
                     <button type="button" class="pf-content-jump" id="pf-jump-content">↓ 选择生成内容（可勾选）</button>
@@ -955,21 +962,21 @@ function syncTargetLengthControl() {
     const presetInput = root?.querySelector('#pf-length-preset');
     const targetInput = root?.querySelector('#pf-target-length');
     const requestedPreset = presetInput?.value || settings.lengthPreset || 'standard';
-    const preset = LENGTH_PRESETS[requestedPreset] || LENGTH_PRESETS.standard;
-    const presetKey = LENGTH_PRESETS[requestedPreset] ? requestedPreset : 'standard';
+    const presetKey = normalizeLengthPreset(requestedPreset);
     if (presetInput && presetInput.value !== presetKey) presetInput.value = presetKey;
 
     let targetLength;
     if (presetKey === 'custom') {
         const raw = String(targetInput?.value ?? '').trim();
-        const previous = Number(settings.targetLength);
+        const previous = Number(settings.customTargetLength);
         const fallback = Number.isFinite(previous)
             ? previous
             : LENGTH_PRESETS.standard.targetLength;
         const candidate = raw === '' ? fallback : Number(raw);
         targetLength = resolveTargetLength('custom', Number.isFinite(candidate) ? candidate : fallback);
+        settings.customTargetLength = targetLength;
     } else {
-        targetLength = preset.targetLength;
+        targetLength = LENGTH_PRESETS[presetKey].targetLength;
     }
 
     if (targetInput) targetInput.value = String(targetLength);
@@ -1001,8 +1008,12 @@ function syncControlsFromSettings() {
         '#pf-species': settings.species || 'random',
         '#pf-species-detail': settings.speciesDetail || '',
         '#pf-name-count': String(settings.nameCount || 5),
-        '#pf-length-preset': LENGTH_PRESETS[settings.lengthPreset] ? settings.lengthPreset : 'standard',
-        '#pf-target-length': String(settings.targetLength || LENGTH_PRESETS.standard.targetLength),
+        '#pf-length-preset': normalizeLengthPreset(settings.lengthPreset),
+        '#pf-target-length': String(
+            normalizeLengthPreset(settings.lengthPreset) === 'custom'
+                ? settings.customTargetLength || settings.targetLength || LENGTH_PRESETS.standard.targetLength
+                : settings.targetLength || LENGTH_PRESETS.standard.targetLength,
+        ),
     };
     for (const [selector, value] of Object.entries(values)) {
         const input = root?.querySelector(selector);
@@ -1056,7 +1067,12 @@ function bindUiEvents() {
         saveSettings();
     });
     root.querySelector('#pf-length-preset')?.addEventListener('change', event => {
-        ensureSettings().lengthPreset = event.target.value;
+        const settings = ensureSettings();
+        settings.lengthPreset = normalizeLengthPreset(event.target.value);
+        if (settings.lengthPreset === 'custom') {
+            const targetInput = root.querySelector('#pf-target-length');
+            if (targetInput) targetInput.value = String(settings.customTargetLength || LENGTH_PRESETS.standard.targetLength);
+        }
         syncTargetLengthControl();
         updateLengthVisibility();
         saveSettings();
@@ -1487,8 +1503,30 @@ function collectCharacterContext() {
     return blocks.join('\n\n').slice(0, maxChars);
 }
 
-function getCharacterOpeningGreeting(character = getCurrentCharacter(getContext())) {
+function getCharacterDefaultGreeting(character = getCurrentCharacter(getContext())) {
     return String(getField(character, 'first_mes', 'first_message', 'greeting') || '').trim();
+}
+
+function getOpeningGreetingReference(
+    character = getCurrentCharacter(getContext()),
+    ctx = getContext(),
+) {
+    const firstMessage = Array.isArray(ctx.chat) ? ctx.chat[0] : null;
+    const activeGreeting = firstMessage && !firstMessage.is_user && !firstMessage.is_system
+        ? String(firstMessage.mes || '').trim()
+        : '';
+    if (activeGreeting) {
+        return {
+            text: activeGreeting,
+            source: '当前聊天正在显示的开场白',
+        };
+    }
+
+    const defaultGreeting = getCharacterDefaultGreeting(character);
+    return {
+        text: defaultGreeting,
+        source: defaultGreeting ? '角色卡默认开场白（第一个）' : '',
+    };
 }
 
 function updateGreetingReferenceUi(character = getCurrentCharacter(getContext())) {
@@ -1496,18 +1534,18 @@ function updateGreetingReferenceUi(character = getCurrentCharacter(getContext())
     const status = state.overlay?.querySelector('#pf-reference-greeting-status');
     if (!toggle || !status) return;
 
-    const greeting = getCharacterOpeningGreeting(character);
+    const { text: greeting, source } = getOpeningGreetingReference(character);
     toggle.disabled = !greeting;
     toggle.checked = Boolean(greeting && ensureSettings().referenceGreeting);
     status.textContent = greeting
-        ? `已识别角色卡主开场白（${greeting.length} 字）。开启后只提取与 U 有关的信息，不读取后续聊天。`
-        : '当前角色没有可读取的主开场白。切换到包含开场白的角色后即可启用。';
+        ? `已识别${source}（${greeting.length} 字）。开启后只提取与 U 有关的信息，不读取后续聊天。`
+        : '当前聊天和角色卡都没有可读取的开场白。切换到包含开场白的角色后即可启用。';
 }
 
 function collectOpeningGreeting() {
     const ctx = getContext();
     const character = getCurrentCharacter(ctx);
-    const greeting = getCharacterOpeningGreeting(character);
+    const { text: greeting } = getOpeningGreetingReference(character, ctx);
     if (!greeting) return '';
 
     const maxChars = Math.max(1200, Math.min(10000, Math.floor(getContextBudgets().totalSafeChars * 0.12)));
@@ -2532,6 +2570,7 @@ function bindContextEvents() {
         'WORLDINFO_UPDATED',
         'WORLDINFO_SETTINGS_UPDATED',
         'PERSONA_CHANGED',
+        'MESSAGE_SWIPED',
     ];
 
     for (const key of candidates) {
