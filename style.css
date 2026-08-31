@@ -133,7 +133,7 @@ html.pf-modal-open body {
 
 .pf-status-grid {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 12px;
 }
 
@@ -205,7 +205,7 @@ html.pf-modal-open body {
 
 .pf-segmented {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 8px;
     padding: 4px;
     border: 1px solid var(--pf-border);
@@ -238,6 +238,28 @@ html.pf-modal-open body {
 
 .pf-grid-2 {
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+
+.pf-refine-note {
+    display: grid;
+    gap: 3px;
+    margin-top: 12px;
+    border: 1px solid color-mix(in srgb, var(--pf-accent) 28%, var(--pf-border));
+}
+
+.pf-refine-note[hidden] {
+    display: none;
+}
+
+.pf-refine-note strong {
+    color: var(--pf-text);
+    font-size: 12.5px;
+}
+
+.pf-refine-note span {
+    color: var(--pf-muted);
+    font-size: 12px;
+    line-height: 1.45;
 }
 
 .pf-grid-3 {
@@ -445,11 +467,63 @@ html.pf-modal-open body {
     color: var(--pf-text);
 }
 
+.pf-mini-button:disabled {
+    opacity: .45;
+    cursor: default;
+}
+
 .pf-preset-toolbar {
     display: flex;
     flex-wrap: wrap;
     gap: 7px;
     margin: 12px 0 4px;
+}
+
+.pf-custom-preset-manager {
+    display: grid;
+    gap: 8px;
+    margin-top: 11px;
+    padding: 11px;
+    border: 1px solid var(--pf-border);
+    border-radius: 12px;
+    background: color-mix(in srgb, var(--pf-bg) 54%, transparent);
+}
+
+.pf-custom-preset-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px;
+}
+
+.pf-compact-control {
+    box-sizing: border-box;
+    width: 100%;
+    min-width: 0;
+    min-height: 38px;
+    padding: 7px 10px;
+    border: 1px solid var(--pf-border);
+    border-radius: 10px;
+    outline: none;
+    background: color-mix(in srgb, var(--pf-bg) 72%, transparent);
+    color: var(--pf-text);
+    font: inherit;
+    font-size: 13px;
+}
+
+.pf-compact-control:focus {
+    border-color: color-mix(in srgb, var(--pf-accent) 62%, transparent);
+}
+
+.pf-delete-preset:not(:disabled) {
+    border-color: color-mix(in srgb, var(--pf-danger) 46%, var(--pf-border));
+    color: color-mix(in srgb, var(--pf-danger) 82%, var(--pf-text));
+}
+
+.pf-custom-preset-help {
+    margin: 0;
+    color: var(--pf-muted);
+    font-size: 11.5px;
+    line-height: 1.45;
 }
 
 .pf-section-groups {
@@ -908,7 +982,8 @@ html.pf-modal-open body {
 
     .pf-segment {
         min-height: 46px;
-        padding-inline: 8px;
+        padding-inline: 6px;
+        font-size: 12px;
     }
 
     .pf-field input,
@@ -1017,6 +1092,10 @@ html.pf-modal-open body {
     }
 
     .pf-option-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .pf-custom-preset-row {
         grid-template-columns: 1fr;
     }
 }
