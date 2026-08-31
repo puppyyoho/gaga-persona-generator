@@ -22,7 +22,7 @@ import {
 const EXTENSION_NAME = 'persona-forge';
 const DISPLAY_NAME = '嘎嘎人设生成器';
 const SETTINGS_KEY = 'personaForge';
-const VERSION = '0.6.4';
+const VERSION = '0.6.5';
 const FAB_ICON_URL = new URL('./icon.png', import.meta.url).href;
 const MAX_LORE_CHARS_DEFAULT = 52000;
 
@@ -678,8 +678,8 @@ function updateFloatingButton() {
     const settings = ensureSettings();
     let button = document.getElementById('pf-fab');
     const mobileViewport = isPhoneViewport();
-    // Keep a mobile entry available even when an older desktop-only setting was saved.
-    if (!settings.showFloatingButton && !mobileViewport) {
+    // Respect the user's visibility switch on every viewport.
+    if (!settings.showFloatingButton) {
         button?.remove();
         return;
     }
