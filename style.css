@@ -1253,9 +1253,16 @@ html.pf-modal-open body {
         padding-inline: 10px;
     }
 
-    /* The settings drawer remains the mobile entry point; keep the floating control desktop-only. */
+    /* Keep the floating entry reachable on mobile without taking over the screen. */
     .pf-fab {
-        display: none !important;
+        width: 48px;
+        height: 48px;
+        right: calc(10px + env(safe-area-inset-right));
+        bottom: calc(12px + env(safe-area-inset-bottom) + 58px);
+    }
+
+    .pf-fab.is-mobile {
+        display: flex;
     }
 }
 
