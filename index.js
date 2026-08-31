@@ -22,7 +22,8 @@ import {
 const EXTENSION_NAME = 'persona-forge';
 const DISPLAY_NAME = '嘎嘎人设生成器';
 const SETTINGS_KEY = 'personaForge';
-const VERSION = '0.6.0';
+const VERSION = '0.6.1';
+const FAB_ICON_URL = new URL('./icon.png', import.meta.url).href;
 const MAX_LORE_CHARS_DEFAULT = 52000;
 
 const state = {
@@ -688,7 +689,7 @@ function updateFloatingButton() {
         button.type = 'button';
         button.title = `拖动调整位置，点击打开${DISPLAY_NAME}`;
         button.setAttribute('aria-label', `打开${DISPLAY_NAME}（可拖动）`);
-        button.innerHTML = '<span class="pf-fab-grip" aria-hidden="true">⠿</span><span aria-hidden="true">✨</span><span class="pf-fab-text">嘎嘎</span>';
+        button.innerHTML = `<img class="pf-fab-icon" src="${FAB_ICON_URL}" alt="" aria-hidden="true" draggable="false">`;
         document.body.appendChild(button);
         restoreFloatingPosition(button);
         bindFloatingDrag(button);
