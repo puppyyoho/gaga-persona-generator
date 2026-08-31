@@ -997,24 +997,31 @@ html.pf-modal-open body {
     right: max(10px, env(safe-area-inset-right));
     bottom: calc(max(12px, env(safe-area-inset-bottom)) + 78px);
     z-index: 9990;
-    min-width: 48px;
-    height: 48px;
-    padding: 0 13px;
+    width: 56px;
+    height: 56px;
+    padding: 0;
     display: flex;
     align-items: center;
     justify-content: center;
-    gap: 6px;
     border: 1px solid color-mix(in srgb, var(--pf-accent) 50%, transparent);
     border-radius: 999px;
-    background: color-mix(in srgb, var(--pf-bg) 92%, var(--pf-accent) 8%);
+    background: var(--pf-card);
     color: var(--pf-text);
     box-shadow: 0 8px 28px rgba(0, 0, 0, .28);
-    font-size: 14px;
-    font-weight: 800;
     cursor: grab;
     user-select: none;
     touch-action: none;
     -webkit-tap-highlight-color: transparent;
+}
+
+.pf-fab-icon {
+    display: block;
+    width: 100%;
+    height: 100%;
+    border-radius: inherit;
+    object-fit: cover;
+    pointer-events: none;
+    user-select: none;
 }
 
 .pf-fab.is-dragging {
