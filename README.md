@@ -1,4 +1,4 @@
-# 嘎嘎人设生成器 v0.6.5
+# 嘎嘎人设生成器 v0.6.6
 
 一个面向 SillyTavern 1.18.0+ 的世界观适配 User Persona 生成扩展。
 
@@ -153,4 +153,8 @@ Chat Completion 会使用与主聊天相同的 `normal` 流式参数构造路径
 - index.js：SillyTavern 上下文、界面、模型调用与状态管理
 - persona-data.js：栏目定义、结构化 Prompt、候选姓名、YAML 与自然语言渲染
 - style.css：桌面、平板与手机响应式样式
-- LICENSE：MIT License
+- LICENSE：CC BY-NC-SA 4.0（署名、非商业性使用、相同方式共享）
+
+## 许可
+
+从 v0.6.6 起，本仓库中的原创代码、文档和素材采用 [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/) 发布：允许署名后进行非商业复制、修改和再发布，衍生作品须使用相同许可。商业使用需要事先取得版权持有者的单独许可。此前已经按 MIT 发布的版本继续受其原许可条款约束；第三方依赖和素材仍以各自许可为准。
