@@ -1,11 +1,14 @@
 import assert from 'node:assert/strict';
 import {
     buildPersonaGenerationPrompt,
+    buildPersonaRefinementPrompt,
+    buildPersonaRefinementSystemPrompt,
     buildPersonaSystemPrompt,
     createDefaultSectionSelection,
     getSelectedSections,
     LENGTH_PRESETS,
     neutralizePersonaReferences,
+    normalizeCustomSectionPresets,
     normalizeStructuredResult,
     parseStructuredResponse,
     renderStructuredResult,
@@ -79,6 +82,14 @@ assert.equal(LENGTH_PRESETS.standard.targetLength, 1000);
 assert.equal(resolveTargetLength('extensive', 1000), LENGTH_PRESETS.extensive.targetLength);
 assert.equal(resolveTargetLength('custom', 1299), 1299);
 assert.equal(resolveTargetLength('custom', 10000), 6000);
+assert.deepEqual(normalizeCustomSectionPresets([
+    { id: 'daily', name: ' 日常模板 ', sectionIds: ['habits', 'friends', 'friends', 'unknown'] },
+    { id: 'daily', name: '成人模板', sectionIds: ['genitals', 'kinks'] },
+    { name: '   ', sectionIds: ['identity'] },
+]), [
+    { id: 'daily', name: '日常模板', sectionIds: ['identity', 'habits', 'friends'] },
+    { id: 'daily-copy', name: '成人模板', sectionIds: ['identity', 'genitals', 'kinks'] },
+]);
 assert.match(buildPersonaGenerationPrompt({ options, characterContext: '', loreText: '' }), /1250/);
 assert.doesNotMatch(buildPersonaGenerationPrompt({ options, characterContext: '', loreText: '' }), /design_summary/);
 assert.match(buildPersonaSystemPrompt(), /冰山式取舍/);
@@ -92,5 +103,60 @@ assert.match(buildPersonaSystemPrompt(), /保留发展接口/);
 assert.match(buildPersonaSystemPrompt(), /绝对禁止使用“不是……而是……”/);
 assert.match(buildPersonaSystemPrompt(), /绝对禁止使用破折号/);
 assert.match(buildPersonaGenerationPrompt({ options, characterContext: '', loreText: '' }), /不得使用先否定后肯定的对照句式/);
+assert.doesNotMatch(buildPersonaGenerationPrompt({ options, characterContext: '', loreText: '' }), /鸡巴、小逼/);
+
+const explicitOptions = {
+    ...options,
+    sections: [...options.sections, { id: 'sexualReactions', label: '做爱时的反应' }],
+};
+const explicitPrompt = buildPersonaGenerationPrompt({ options: explicitOptions, characterContext: '', loreText: '' });
+assert.match(explicitPrompt, /直白、具体、有情色感的中文/);
+assert.match(explicitPrompt, /鸡巴、小逼、阴蒂、阴道、龟头/);
+assert.match(explicitPrompt, /不要把整份人设无差别地色情化/);
+
+const refineOptions = {
+    ...options,
+    mode: 'refine',
+    fixedName: '当前U',
+    nameCount: 1,
+    gender: 'random',
+    species: 'random',
+    directionText: '保留职业与关系，只优化表达',
+};
+const refinementPrompt = buildPersonaRefinementPrompt({
+    options: refineOptions,
+    personaName: '当前U',
+    currentPersonaText: '当前U是一名药剂师。',
+    characterContext: '角色A经营一家杂货铺。',
+    loreText: '城镇禁止公开出售毒药。',
+});
+assert.match(buildPersonaRefinementSystemPrompt(), /权威底稿/);
+assert.match(buildPersonaRefinementSystemPrompt(), /最小必要修正/);
+assert.match(refinementPrompt, /请优化当前已经启用的 User Persona/);
+assert.match(refinementPrompt, /当前U是一名药剂师/);
+assert.match(refinementPrompt, /角色A经营一家杂货铺/);
+assert.match(refinementPrompt, /城镇禁止公开出售毒药/);
+assert.match(refinementPrompt, /name_candidates 必须只有一个对象/);
+assert.match(refinementPrompt, /保留职业与关系，只优化表达/);
+assert.match(buildPersonaRefinementPrompt({
+    options: { ...refineOptions, sections: explicitOptions.sections },
+    personaName: '当前U',
+    currentPersonaText: '当前U是一名药剂师。',
+    characterContext: '',
+    loreText: '',
+}), /鸡巴、小逼、阴蒂、阴道、龟头/);
+
+const refined = normalizeStructuredResult({
+    name_candidates: [{ name: '错误的新名字', aliases: ['旧称'] }],
+    profile: {
+        基本身份: { 年龄: 31, 性别: '女' },
+        '职业、经济与资源': '[[PF_NAME]]仍然经营原来的药铺。',
+    },
+}, refineOptions, '当前U');
+assert.equal(refined.candidates.length, 1);
+assert.equal(refined.candidates[0].name, '当前U');
+assert.deepEqual(refined.candidates[0].aliases, ['旧称']);
+assert.equal(refined.options.mode, 'refine');
+assert.match(renderStructuredResult(refined, 0, 'natural'), /当前U仍然经营原来的药铺/);
 
 console.log('persona-data logic ok');
