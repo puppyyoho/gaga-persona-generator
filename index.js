@@ -21,7 +21,7 @@ import {
 const EXTENSION_NAME = 'persona-forge';
 const DISPLAY_NAME = '嘎嘎人设生成器';
 const SETTINGS_KEY = 'personaForge';
-const VERSION = '0.4.0';
+const VERSION = '0.4.1';
 const MAX_LORE_CHARS_DEFAULT = 52000;
 
 const state = {
@@ -235,6 +235,7 @@ function ensureSettings() {
     const current = root[SETTINGS_KEY] && typeof root[SETTINGS_KEY] === 'object'
         ? root[SETTINGS_KEY]
         : {};
+    const previousValue = JSON.stringify(current);
     const mergedSections = {
         ...defaults.sectionSelection,
         ...(current.sectionSelection && typeof current.sectionSelection === 'object' ? current.sectionSelection : {}),
@@ -248,12 +249,17 @@ function ensureSettings() {
     };
     // Remove the retired optional summary setting from older installations.
     delete migrated.includeSummary;
-    const changed = JSON.stringify(current) !== JSON.stringify(migrated);
-    root[SETTINGS_KEY] = migrated;
+    const changed = previousValue !== JSON.stringify(migrated);
+    // Keep the same object reference. Several UI operations read settings
+    // again while handling one event; replacing the object here would make
+    // the caller mutate a stale copy and silently lose its changes.
+    Object.assign(current, migrated);
+    delete current.includeSummary;
+    root[SETTINGS_KEY] = current;
     if (changed) {
         ctx.saveSettingsDebounced?.();
     }
-    return root[SETTINGS_KEY];
+    return current;
 }
 
 function saveSettings() {
@@ -846,8 +852,8 @@ function saveCustomSectionPreset() {
         return;
     }
 
-    const settings = ensureSettings();
     const sectionIds = getSelectedSections(getCurrentSectionSelection()).map(section => section.id);
+    const settings = ensureSettings();
     const existing = settings.customSectionPresets.find(item => item.name.toLocaleLowerCase() === name.toLocaleLowerCase());
     let selectedId;
     if (existing) {
