@@ -22,7 +22,7 @@ import {
 const EXTENSION_NAME = 'persona-forge';
 const DISPLAY_NAME = '嘎嘎人设生成器';
 const SETTINGS_KEY = 'personaForge';
-const VERSION = '0.6.3';
+const VERSION = '0.6.6';
 const FAB_ICON_URL = new URL('./icon.png', import.meta.url).href;
 const MAX_LORE_CHARS_DEFAULT = 52000;
 
@@ -677,6 +677,8 @@ function bindFloatingDrag(button) {
 function updateFloatingButton() {
     const settings = ensureSettings();
     let button = document.getElementById('pf-fab');
+    const mobileViewport = isPhoneViewport();
+    // Respect the user's visibility switch on every viewport.
     if (!settings.showFloatingButton) {
         button?.remove();
         return;
@@ -696,7 +698,15 @@ function updateFloatingButton() {
     }
     // Keep the entry visible on every viewport. Mobile gets a compact variant via CSS.
     button.hidden = false;
-    button.classList.toggle('is-mobile', isPhoneViewport());
+    button.classList.toggle('is-mobile', mobileViewport);
+    if (mobileViewport && !ensureSettings().floatingPosition) {
+        const rect = button.getBoundingClientRect();
+        setFloatingPosition(
+            button,
+            Math.max(8, window.innerWidth - rect.width - 14),
+            Math.max(8, window.innerHeight - rect.height - 92),
+        );
+    }
     // A position saved on a wider desktop viewport may be outside a phone viewport.
     // Clamp it after the mobile CSS has applied so the button always remains reachable.
     constrainFloatingButton();
