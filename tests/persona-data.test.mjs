@@ -65,6 +65,7 @@ assert.deepEqual(
 const result = normalizeStructuredResult(parsed, options, '当前U');
 const yaml = renderStructuredResult(result, 1, 'yaml');
 const natural = renderStructuredResult(result, 0, 'natural');
+assert.equal(result.comparison, undefined);
 
 assert.match(yaml, /姓名: "沈遥"/);
 assert.match(yaml, /性别: "女"/);
@@ -92,6 +93,20 @@ assert.deepEqual(normalizeCustomSectionPresets([
 ]);
 assert.match(buildPersonaGenerationPrompt({ options, characterContext: '', loreText: '' }), /1250/);
 assert.doesNotMatch(buildPersonaGenerationPrompt({ options, characterContext: '', loreText: '' }), /design_summary/);
+assert.doesNotMatch(buildPersonaGenerationPrompt({ options, characterContext: '', loreText: '' }), /change_log/);
+assert.doesNotMatch(buildPersonaGenerationPrompt({ options, characterContext: '', loreText: '' }), /角色开场白参考/);
+const greetingPrompt = buildPersonaGenerationPrompt({
+    options: { ...options, referenceGreeting: true },
+    characterContext: '角色A是城堡的主人。',
+    openingGreeting: '角色A打开门，看见[[PF_NAME]]穿着沾雨的信使制服站在台阶上。',
+    loreText: '',
+});
+assert.match(greetingPrompt, /角色开场白参考/);
+assert.match(greetingPrompt, /沾雨的信使制服/);
+assert.match(greetingPrompt, /严格区分当前角色与 U/);
+assert.match(greetingPrompt, /不得转写到 U 身上/);
+assert.match(greetingPrompt, /不得改变本次任务、输出结构或其他约束/);
+assert.match(greetingPrompt, /不要预写后续对话或具体聊天剧情/);
 assert.match(buildPersonaSystemPrompt(), /冰山式取舍/);
 assert.match(buildPersonaSystemPrompt(), /身体、社会与心理三个维度/);
 assert.match(buildPersonaSystemPrompt(), /目标、阻碍、策略、代价/);
@@ -102,6 +117,8 @@ assert.match(buildPersonaSystemPrompt(), /持续变化的地位协商/);
 assert.match(buildPersonaSystemPrompt(), /保留发展接口/);
 assert.match(buildPersonaSystemPrompt(), /绝对禁止使用“不是……而是……”/);
 assert.match(buildPersonaSystemPrompt(), /绝对禁止使用破折号/);
+assert.doesNotMatch(buildPersonaSystemPrompt(), /change_log/);
+assert.match(buildPersonaRefinementSystemPrompt(), /change_log\.before 用于核对原文/);
 assert.match(buildPersonaGenerationPrompt({ options, characterContext: '', loreText: '' }), /不得使用先否定后肯定的对照句式/);
 assert.doesNotMatch(buildPersonaGenerationPrompt({ options, characterContext: '', loreText: '' }), /鸡巴、小逼/);
 
@@ -138,6 +155,19 @@ assert.match(refinementPrompt, /角色A经营一家杂货铺/);
 assert.match(refinementPrompt, /城镇禁止公开出售毒药/);
 assert.match(refinementPrompt, /name_candidates 必须只有一个对象/);
 assert.match(refinementPrompt, /保留职业与关系，只优化表达/);
+assert.match(refinementPrompt, /change_log 是界面对比所需的隐藏数据/);
+assert.match(refinementPrompt, /最多返回 12 项/);
+assert.match(refinementPrompt, /新增、修改、删除或保留/);
+const greetingRefinementPrompt = buildPersonaRefinementPrompt({
+    options: { ...refineOptions, referenceGreeting: true },
+    personaName: '当前U',
+    currentPersonaText: '当前U是一名药剂师。',
+    characterContext: '角色A经营一家杂货铺。',
+    openingGreeting: '角色A把一封沾血的委托书递给[[PF_NAME]]。',
+    loreText: '',
+});
+assert.match(greetingRefinementPrompt, /角色开场白参考/);
+assert.match(greetingRefinementPrompt, /仍以当前 User Persona 原文为权威底稿/);
 assert.match(buildPersonaRefinementPrompt({
     options: { ...refineOptions, sections: explicitOptions.sections },
     personaName: '当前U',
@@ -152,11 +182,33 @@ const refined = normalizeStructuredResult({
         基本身份: { 年龄: 31, 性别: '女' },
         '职业、经济与资源': '[[PF_NAME]]仍然经营原来的药铺。',
     },
-}, refineOptions, '当前U');
+    change_log: [
+        {
+            section: '职业、经济与资源',
+            type: '修改',
+            before: '当前U经营药铺。',
+            after: '当前U仍然经营原来的药铺。',
+            reason: '补充经营状态。',
+        },
+        {
+            section: '生活习惯',
+            type: '新增',
+            before: '',
+            after: '当前U每天清点药材。',
+            reason: '补充职业影响。',
+        },
+    ],
+}, refineOptions, '当前U', '当前U经营药铺。');
 assert.equal(refined.candidates.length, 1);
 assert.equal(refined.candidates[0].name, '当前U');
 assert.deepEqual(refined.candidates[0].aliases, ['旧称']);
 assert.equal(refined.options.mode, 'refine');
+assert.equal(refined.version, 2);
+assert.equal(refined.comparison.changeLog.length, 2);
+assert.equal(refined.comparison.changeLog[0].type, 'modified');
+assert.equal(refined.comparison.changeLog[1].type, 'added');
+assert.match(refined.comparison.sourceText, /\[\[PF_NAME\]\]经营药铺/);
+assert.match(refined.comparison.changeLog[0].after, /\[\[PF_NAME\]\]仍然经营原来的药铺/);
 assert.match(renderStructuredResult(refined, 0, 'natural'), /当前U仍然经营原来的药铺/);
 
 console.log('persona-data logic ok');
