@@ -97,6 +97,12 @@ export const LENGTH_PRESETS = {
     extensive: { label: '超详细', targetLength: 2800 },
 };
 
+export function normalizeLengthPreset(preset) {
+    const key = String(preset || '').trim();
+    if (key === 'custom' || Object.hasOwn(LENGTH_PRESETS, key)) return key;
+    return 'standard';
+}
+
 export function resolveTargetLength(preset, value) {
     if (preset !== 'custom') return LENGTH_PRESETS[preset]?.targetLength || LENGTH_PRESETS.standard.targetLength;
     const numeric = Number(value);
