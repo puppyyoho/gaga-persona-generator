@@ -22,7 +22,7 @@ import {
 const EXTENSION_NAME = 'persona-forge';
 const DISPLAY_NAME = '嘎嘎人设生成器';
 const SETTINGS_KEY = 'personaForge';
-const VERSION = '0.6.1';
+const VERSION = '0.6.2';
 const FAB_ICON_URL = new URL('./icon.png', import.meta.url).href;
 const MAX_LORE_CHARS_DEFAULT = 52000;
 
@@ -557,7 +557,7 @@ function createSettingsUi() {
                 <button type="button" class="menu_button pf-open-button" id="pf-open-settings"><span aria-hidden="true">✨</span><span>打开${DISPLAY_NAME}</span></button>
                 <label class="checkbox_label pf-settings-check">
                     <input id="pf-show-fab" type="checkbox" ${settings.showFloatingButton ? 'checked' : ''}>
-                    <span>显示桌面悬浮入口（可拖动）</span>
+                    <span>显示悬浮入口（可拖动，手机端也显示）</span>
                 </label>
             </div>
         </div>
@@ -615,7 +615,7 @@ function restoreFloatingPosition(button) {
 function constrainFloatingButton() {
     const button = document.getElementById('pf-fab');
     const saved = ensureSettings().floatingPosition;
-    if (!button || !saved || isPhoneViewport()) return;
+    if (!button || !saved) return;
     const left = Number.parseFloat(button.style.left);
     const top = Number.parseFloat(button.style.top);
     if (Number.isFinite(left) && Number.isFinite(top)) setFloatingPosition(button, left, top, true);
@@ -694,7 +694,9 @@ function updateFloatingButton() {
         restoreFloatingPosition(button);
         bindFloatingDrag(button);
     }
-    button.hidden = isPhoneViewport();
+    // Keep the entry visible on every viewport. Mobile gets a compact variant via CSS.
+    button.hidden = false;
+    button.classList.toggle('is-mobile', isPhoneViewport());
     if (!state.floatingResizeBound) {
         window.addEventListener('resize', () => {
             updateFloatingButton();
