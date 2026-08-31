@@ -22,7 +22,7 @@ import {
 const EXTENSION_NAME = 'persona-forge';
 const DISPLAY_NAME = '嘎嘎人设生成器';
 const SETTINGS_KEY = 'personaForge';
-const VERSION = '0.6.2';
+const VERSION = '0.6.3';
 const FAB_ICON_URL = new URL('./icon.png', import.meta.url).href;
 const MAX_LORE_CHARS_DEFAULT = 52000;
 
@@ -697,6 +697,9 @@ function updateFloatingButton() {
     // Keep the entry visible on every viewport. Mobile gets a compact variant via CSS.
     button.hidden = false;
     button.classList.toggle('is-mobile', isPhoneViewport());
+    // A position saved on a wider desktop viewport may be outside a phone viewport.
+    // Clamp it after the mobile CSS has applied so the button always remains reachable.
+    constrainFloatingButton();
     if (!state.floatingResizeBound) {
         window.addEventListener('resize', () => {
             updateFloatingButton();
