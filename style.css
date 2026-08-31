@@ -334,6 +334,7 @@ html.pf-modal-open body {
 .pf-mini-button:focus-visible,
 .pf-name-button:focus-visible,
 .pf-format-button:focus-visible,
+.pf-view-button:focus-visible,
 .pf-fab:focus-visible {
     border-color: var(--pf-accent);
     box-shadow: 0 0 0 3px color-mix(in srgb, var(--pf-accent) 22%, transparent);
@@ -661,7 +662,8 @@ html.pf-modal-open body {
 }
 
 .pf-candidate-head,
-.pf-output-toolbar {
+.pf-output-toolbar,
+.pf-refinement-view-toolbar {
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -676,7 +678,8 @@ html.pf-modal-open body {
 }
 
 .pf-name-button,
-.pf-format-button {
+.pf-format-button,
+.pf-view-button {
     min-height: 36px;
     padding: 7px 11px;
     border: 1px solid var(--pf-border);
@@ -690,17 +693,20 @@ html.pf-modal-open body {
 }
 
 .pf-name-button.is-active,
-.pf-format-button.is-active {
+.pf-format-button.is-active,
+.pf-view-button.is-active {
     border-color: color-mix(in srgb, var(--pf-accent) 55%, transparent);
     background: color-mix(in srgb, var(--pf-accent) 18%, transparent);
     color: var(--pf-text);
 }
 
-.pf-output-toolbar {
+.pf-output-toolbar,
+.pf-refinement-view-toolbar {
     margin: 0 0 12px;
 }
 
-.pf-format-toggle {
+.pf-format-toggle,
+.pf-view-toggle {
     display: inline-flex;
     gap: 5px;
     padding: 3px;
@@ -708,10 +714,179 @@ html.pf-modal-open body {
     border-radius: 999px;
 }
 
-.pf-format-button {
+.pf-format-button,
+.pf-view-button {
     min-height: 32px;
     padding: 5px 10px;
     border-color: transparent;
+}
+
+.pf-refinement-view-toolbar[hidden],
+.pf-comparison[hidden] {
+    display: none;
+}
+
+.pf-comparison {
+    display: grid;
+    gap: 10px;
+    max-height: min(55vh, 560px);
+    overflow: auto;
+    padding: 2px;
+}
+
+.pf-diff-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 7px;
+}
+
+.pf-diff-legend span,
+.pf-change-badge {
+    display: inline-flex;
+    align-items: center;
+    min-height: 25px;
+    padding: 3px 8px;
+    border-radius: 999px;
+    font-size: 11.5px;
+    font-weight: 750;
+}
+
+.pf-diff-legend .is-added,
+.pf-change-badge.is-added {
+    color: color-mix(in srgb, #3eaa70 90%, var(--pf-text));
+    background: color-mix(in srgb, #3eaa70 17%, transparent);
+}
+
+.pf-diff-legend .is-modified,
+.pf-change-badge.is-modified {
+    color: color-mix(in srgb, #d09b35 90%, var(--pf-text));
+    background: color-mix(in srgb, #d09b35 18%, transparent);
+}
+
+.pf-diff-legend .is-removed,
+.pf-change-badge.is-removed {
+    color: color-mix(in srgb, #d35c67 90%, var(--pf-text));
+    background: color-mix(in srgb, #d35c67 16%, transparent);
+}
+
+.pf-diff-legend .is-unchanged,
+.pf-change-badge.is-unchanged {
+    color: var(--pf-muted);
+    background: color-mix(in srgb, var(--pf-muted) 13%, transparent);
+}
+
+.pf-change-card {
+    display: grid;
+    gap: 9px;
+    padding: 11px;
+    border: 1px solid var(--pf-border);
+    border-left-width: 4px;
+    border-radius: 12px;
+    background: color-mix(in srgb, var(--pf-bg) 62%, transparent);
+}
+
+.pf-change-card.is-added { border-left-color: #3eaa70; }
+.pf-change-card.is-modified { border-left-color: #d09b35; }
+.pf-change-card.is-removed { border-left-color: #d35c67; }
+.pf-change-card.is-unchanged { border-left-color: var(--pf-muted); }
+
+.pf-change-card header {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 7px;
+}
+
+.pf-change-card header strong {
+    font-size: 13.5px;
+}
+
+.pf-change-reason {
+    flex-basis: 100%;
+    margin: 0;
+    color: var(--pf-muted);
+    font-size: 12px;
+    line-height: 1.5;
+}
+
+.pf-comparison-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+}
+
+.pf-comparison-column {
+    min-width: 0;
+    padding: 9px 10px;
+    border-radius: 9px;
+}
+
+.pf-comparison-column.is-added {
+    background: color-mix(in srgb, #3eaa70 13%, transparent);
+}
+
+.pf-comparison-column.is-modified {
+    background: color-mix(in srgb, #d09b35 14%, transparent);
+}
+
+.pf-comparison-column.is-removed {
+    background: color-mix(in srgb, #d35c67 12%, transparent);
+}
+
+.pf-comparison-column.is-unchanged {
+    background: color-mix(in srgb, var(--pf-muted) 9%, transparent);
+}
+
+.pf-comparison-column.is-neutral {
+    background: color-mix(in srgb, var(--pf-bg) 74%, transparent);
+}
+
+.pf-comparison-column-label {
+    display: block;
+    margin-bottom: 5px;
+    color: var(--pf-muted);
+    font-size: 11.5px;
+    font-weight: 750;
+}
+
+.pf-comparison-text,
+.pf-local-diff {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    font-size: 13px;
+    line-height: 1.65;
+}
+
+.pf-comparison-note,
+.pf-comparison-empty {
+    margin: 0;
+    padding: 10px;
+    border-radius: 10px;
+    color: var(--pf-muted);
+    background: color-mix(in srgb, var(--pf-bg) 58%, transparent);
+    font-size: 12px;
+    line-height: 1.55;
+}
+
+.pf-local-diff {
+    padding: 12px;
+    border: 1px solid var(--pf-border);
+    border-radius: 12px;
+    background: color-mix(in srgb, var(--pf-bg) 66%, transparent);
+}
+
+.pf-diff-part.is-added {
+    background: color-mix(in srgb, #3eaa70 22%, transparent);
+}
+
+.pf-diff-part.is-removed {
+    color: color-mix(in srgb, #d35c67 90%, var(--pf-text));
+    background: color-mix(in srgb, #d35c67 16%, transparent);
+    text-decoration: line-through;
+}
+
+.pf-diff-part.is-unchanged {
+    color: var(--pf-muted);
 }
 
 .pf-copy-button {
@@ -1017,9 +1192,14 @@ html.pf-modal-open body {
     }
 
     .pf-candidate-head,
-    .pf-output-toolbar {
+    .pf-output-toolbar,
+    .pf-refinement-view-toolbar {
         align-items: flex-start;
         flex-wrap: wrap;
+    }
+
+    .pf-comparison-grid {
+        grid-template-columns: 1fr;
     }
 
     .pf-mini-button {

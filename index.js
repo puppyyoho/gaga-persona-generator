@@ -1,5 +1,6 @@
 import {
     LENGTH_PRESETS,
+    PERSONA_NAME_TOKEN,
     SECTION_GROUPS,
     SECTION_PRESETS,
     buildNameRerollPrompt,
@@ -21,7 +22,7 @@ import {
 const EXTENSION_NAME = 'persona-forge';
 const DISPLAY_NAME = '嘎嘎人设生成器';
 const SETTINGS_KEY = 'personaForge';
-const VERSION = '0.4.1';
+const VERSION = '0.6.0';
 const MAX_LORE_CHARS_DEFAULT = 52000;
 
 const state = {
@@ -41,6 +42,7 @@ const state = {
     streamAbortController: null,
     structuredResult: null,
     selectedCandidateIndex: 0,
+    resultView: 'persona',
 };
 
 function getContext() {
@@ -222,6 +224,7 @@ function ensureSettings() {
         lastStyle: 'balanced',
         lastOutputFormat: 'natural',
         streamOutput: true,
+        referenceGreeting: false,
         lastSelectedCandidateIndex: 0,
         gender: 'random',
         species: 'random',
@@ -400,6 +403,13 @@ function createStaticUi() {
                             <small>模型生成期间会持续显示实际收到的内容与分片数；接口不支持时会说明原因并回退普通生成。</small>
                         </span>
                     </label>
+                    <label class="pf-option-toggle" for="pf-reference-greeting">
+                        <input id="pf-reference-greeting" type="checkbox">
+                        <span>
+                            <strong>参考角色开场白</strong>
+                            <small id="pf-reference-greeting-status">开启后会从角色卡主开场白提取与 U 有关的关系、身份和初始处境，不读取后续聊天。</small>
+                        </span>
+                    </label>
                     <button type="button" class="pf-content-jump" id="pf-jump-content">↓ 选择生成内容（可勾选）</button>
 
                     <div id="pf-directed-fields" class="pf-directed-fields" hidden>
@@ -497,8 +507,16 @@ function createStaticUi() {
                             <button type="button" class="pf-format-button is-active" data-format="natural" role="radio" aria-checked="true">自然语言</button>
                         </div>
                     </div>
+                    <div class="pf-refinement-view-toolbar" id="pf-refinement-view-toolbar" hidden>
+                        <span class="pf-label-mini">查看方式</span>
+                        <div class="pf-view-toggle" role="tablist" aria-label="优化结果查看方式">
+                            <button type="button" class="pf-view-button is-active" data-result-view="persona" role="tab" aria-selected="true">优化后人设</button>
+                            <button type="button" class="pf-view-button" data-result-view="comparison" role="tab" aria-selected="false">修改对比</button>
+                        </div>
+                    </div>
                     <div class="pf-empty" id="pf-empty">还没有生成内容。</div>
                     <pre class="pf-result" id="pf-result" tabindex="0" aria-live="off" hidden></pre>
+                    <div class="pf-comparison" id="pf-comparison" tabindex="0" hidden></div>
                 </section>
             </div>
 
@@ -976,6 +994,9 @@ function syncControlsFromSettings() {
     }
     const streamToggle = root?.querySelector('#pf-stream-output');
     if (streamToggle) streamToggle.checked = settings.streamOutput !== false;
+    const greetingToggle = root?.querySelector('#pf-reference-greeting');
+    if (greetingToggle) greetingToggle.checked = Boolean(settings.referenceGreeting);
+    updateGreetingReferenceUi();
     syncTargetLengthControl();
     updateSpeciesDetailVisibility();
     updateLengthVisibility();
@@ -1034,6 +1055,10 @@ function bindUiEvents() {
         ensureSettings().streamOutput = Boolean(event.target.checked);
         saveSettings();
     });
+    root.querySelector('#pf-reference-greeting')?.addEventListener('change', event => {
+        ensureSettings().referenceGreeting = Boolean(event.target.checked);
+        saveSettings();
+    });
     root.querySelectorAll('[data-preset]').forEach(button => {
         button.addEventListener('click', () => applySectionPreset(button.dataset.preset));
     });
@@ -1059,6 +1084,9 @@ function bindUiEvents() {
     });
     root.querySelectorAll('[data-format]').forEach(button => {
         button.addEventListener('click', () => setOutputFormat(button.dataset.format));
+    });
+    root.querySelectorAll('[data-result-view]').forEach(button => {
+        button.addEventListener('click', () => setResultView(button.dataset.resultView));
     });
 
     root.querySelector('#pf-copy')?.addEventListener('click', copyCurrentResult);
@@ -1189,6 +1217,7 @@ async function openPanel() {
     setMode(settings.lastMode || 'random');
     syncControlsFromSettings();
     renderSectionOptions();
+    state.resultView = 'persona';
 
     if (settings.lastStructuredResult && typeof settings.lastStructuredResult === 'object') {
         state.structuredResult = settings.lastStructuredResult;
@@ -1231,6 +1260,8 @@ async function refreshContextUi(force = false) {
     state.overlay.querySelector('#pf-context-line').textContent = character
         ? `已读取当前角色 · ${state.activeWorldNames.length} 个绑定/启用世界书${state.embeddedBook ? ' · 含卡内世界书' : ''}`
         : '当前未选择单角色；仍可使用全局与聊天世界书生成。';
+
+    updateGreetingReferenceUi(character);
 
     renderActiveChips();
     renderWorldBookList();
@@ -1440,6 +1471,37 @@ function collectCharacterContext() {
     return blocks.join('\n\n').slice(0, maxChars);
 }
 
+function getCharacterOpeningGreeting(character = getCurrentCharacter(getContext())) {
+    return String(getField(character, 'first_mes', 'first_message', 'greeting') || '').trim();
+}
+
+function updateGreetingReferenceUi(character = getCurrentCharacter(getContext())) {
+    const toggle = state.overlay?.querySelector('#pf-reference-greeting');
+    const status = state.overlay?.querySelector('#pf-reference-greeting-status');
+    if (!toggle || !status) return;
+
+    const greeting = getCharacterOpeningGreeting(character);
+    toggle.disabled = !greeting;
+    toggle.checked = Boolean(greeting && ensureSettings().referenceGreeting);
+    status.textContent = greeting
+        ? `已识别角色卡主开场白（${greeting.length} 字）。开启后只提取与 U 有关的信息，不读取后续聊天。`
+        : '当前角色没有可读取的主开场白。切换到包含开场白的角色后即可启用。';
+}
+
+function collectOpeningGreeting() {
+    const ctx = getContext();
+    const character = getCurrentCharacter(ctx);
+    const greeting = getCharacterOpeningGreeting(character);
+    if (!greeting) return '';
+
+    const maxChars = Math.max(1200, Math.min(10000, Math.floor(getContextBudgets().totalSafeChars * 0.12)));
+    return neutralizePersonaReferences(
+        greeting,
+        ctx.name1,
+        getCharacterName(character),
+    ).slice(0, maxChars);
+}
+
 function collectCurrentPersonaText() {
     const ctx = getContext();
     const persona = getCurrentPersonaContext(ctx);
@@ -1465,6 +1527,8 @@ function collectGenerationOptions() {
     const lengthPreset = root.querySelector('#pf-length-preset')?.value || 'standard';
     const targetLength = syncTargetLengthControl();
     const streamOutput = Boolean(root.querySelector('#pf-stream-output')?.checked);
+    const greetingToggle = root.querySelector('#pf-reference-greeting');
+    const referenceGreeting = Boolean(greetingToggle?.checked && !greetingToggle.disabled);
     const sections = getSelectedSections(getCurrentSectionSelection());
     const randomId = globalThis.crypto?.randomUUID?.() || String(Date.now()) + '-' + String(Math.random());
 
@@ -1480,6 +1544,7 @@ function collectGenerationOptions() {
             lengthPreset,
             targetLength,
             streamOutput,
+            referenceGreeting,
             fixedName: persona.name || 'User',
             sections,
             directionText: [
@@ -1500,6 +1565,7 @@ function collectGenerationOptions() {
             lengthPreset,
             targetLength,
             streamOutput,
+            referenceGreeting,
             fixedName: '',
             sections,
             directionText: [
@@ -1525,6 +1591,7 @@ function collectGenerationOptions() {
         lengthPreset,
         targetLength,
         streamOutput,
+        referenceGreeting,
         fixedName: name,
         sections,
         directionText: [
@@ -1832,22 +1899,25 @@ async function generatePersona() {
         await refreshContextUi(false);
         const options = collectGenerationOptions();
         const characterContext = collectCharacterContext();
+        const openingGreeting = options.referenceGreeting ? collectOpeningGreeting() : '';
         const currentPersonaText = options.mode === 'refine' ? collectCurrentPersonaText() : '';
         if (options.mode === 'refine' && !currentPersonaText) {
             throw new Error('当前 U 的 Persona Description 为空，请先填写人设后再使用优化模式。');
         }
-        const lore = await collectWorldLore(characterContext.length + currentPersonaText.length);
+        const lore = await collectWorldLore(characterContext.length + openingGreeting.length + currentPersonaText.length);
         const prompt = options.mode === 'refine'
             ? buildPersonaRefinementPrompt({
                 options,
                 personaName: getCurrentPersonaContext(ctx).name,
                 currentPersonaText,
                 characterContext,
+                openingGreeting,
                 loreText: lore.text,
             })
             : buildPersonaGenerationPrompt({
                 options,
                 characterContext,
+                openingGreeting,
                 loreText: lore.text,
             });
 
@@ -1893,11 +1963,13 @@ async function generatePersona() {
 
         if (generationId !== state.generationEpoch) return;
         const payload = parseStructuredResponse(resultText);
-        state.structuredResult = normalizeStructuredResult(payload, options, ctx.name1);
+        state.structuredResult = normalizeStructuredResult(payload, options, ctx.name1, currentPersonaText);
         state.selectedCandidateIndex = 0;
+        state.resultView = 'persona';
 
         const notes = [];
         notes.push('已读取 ' + lore.includedEntries + '/' + lore.totalEntries + ' 条世界书内容');
+        if (openingGreeting) notes.push('已参考角色开场白');
         if (lore.truncated) notes.push('世界书较大，已按广义规则优先截取');
         if (lore.failures.length) notes.push(lore.failures.length + ' 个世界书读取失败');
 
@@ -2011,6 +2083,213 @@ function selectCandidate(index) {
     renderCurrentResult();
 }
 
+function getResultCandidateName() {
+    const candidates = state.structuredResult?.candidates || [];
+    const safeIndex = Math.min(
+        Math.max(Number(state.selectedCandidateIndex) || 0, 0),
+        Math.max(0, candidates.length - 1),
+    );
+    return candidates[safeIndex]?.name || '未命名 Persona';
+}
+
+function materializeComparisonText(value) {
+    return String(value || '').split(PERSONA_NAME_TOKEN).join(getResultCandidateName());
+}
+
+function splitComparisonSegments(value) {
+    const text = String(value || '').replace(/\r\n?/g, '\n').trim();
+    if (!text) return [];
+    const segments = text.match(/[^。！？；\n]+[。！？；]?|\n+/g) || [text];
+    return segments.map(segment => segment.trim()).filter(Boolean).slice(0, 320);
+}
+
+function buildLocalTextDiff(beforeText, afterText) {
+    const before = splitComparisonSegments(beforeText);
+    const after = splitComparisonSegments(afterText);
+    const table = Array.from(
+        { length: before.length + 1 },
+        () => new Uint16Array(after.length + 1),
+    );
+
+    for (let i = 1; i <= before.length; i += 1) {
+        for (let j = 1; j <= after.length; j += 1) {
+            table[i][j] = before[i - 1] === after[j - 1]
+                ? table[i - 1][j - 1] + 1
+                : Math.max(table[i - 1][j], table[i][j - 1]);
+        }
+    }
+
+    const reversed = [];
+    let i = before.length;
+    let j = after.length;
+    while (i > 0 || j > 0) {
+        if (i > 0 && j > 0 && before[i - 1] === after[j - 1]) {
+            reversed.push({ type: 'unchanged', text: before[i - 1] });
+            i -= 1;
+            j -= 1;
+        } else if (i > 0 && (j === 0 || table[i - 1][j] >= table[i][j - 1])) {
+            reversed.push({ type: 'removed', text: before[i - 1] });
+            i -= 1;
+        } else {
+            reversed.push({ type: 'added', text: after[j - 1] });
+            j -= 1;
+        }
+    }
+
+    return reversed.reverse().reduce((groups, item) => {
+        const previous = groups.at(-1);
+        if (previous?.type === item.type) {
+            previous.text += item.text;
+        } else {
+            groups.push({ ...item });
+        }
+        return groups;
+    }, []);
+}
+
+function appendComparisonColumn(container, labelText, value, tone, emptyText) {
+    const column = document.createElement('div');
+    column.className = `pf-comparison-column ${tone}`;
+    const label = document.createElement('span');
+    label.className = 'pf-comparison-column-label';
+    label.textContent = labelText;
+    const text = document.createElement('div');
+    text.className = 'pf-comparison-text';
+    text.textContent = value || emptyText;
+    column.append(label, text);
+    container.appendChild(column);
+}
+
+function renderRefinementComparison() {
+    const container = state.overlay?.querySelector('#pf-comparison');
+    if (!container) return;
+    container.replaceChildren();
+
+    const comparison = state.structuredResult?.comparison || {};
+    const changes = Array.isArray(comparison.changeLog) ? comparison.changeLog : [];
+    const legend = document.createElement('div');
+    legend.className = 'pf-diff-legend';
+    for (const [className, labelText] of [
+        ['is-added', '新增'],
+        ['is-modified', '修改'],
+        ['is-removed', '删除'],
+        ['is-unchanged', '保留'],
+    ]) {
+        const item = document.createElement('span');
+        item.className = className;
+        item.textContent = labelText;
+        legend.appendChild(item);
+    }
+    container.appendChild(legend);
+
+    if (changes.length) {
+        const typeMeta = {
+            added: { label: '新增', className: 'is-added' },
+            modified: { label: '修改', className: 'is-modified' },
+            removed: { label: '删除', className: 'is-removed' },
+            unchanged: { label: '保留', className: 'is-unchanged' },
+        };
+        for (const change of changes) {
+            const meta = typeMeta[change.type] || typeMeta.modified;
+            const card = document.createElement('article');
+            card.className = `pf-change-card ${meta.className}`;
+            const header = document.createElement('header');
+            const title = document.createElement('strong');
+            title.textContent = change.section || '未分类';
+            const badge = document.createElement('span');
+            badge.className = `pf-change-badge ${meta.className}`;
+            badge.textContent = meta.label;
+            header.append(title, badge);
+            if (change.reason) {
+                const reason = document.createElement('p');
+                reason.className = 'pf-change-reason';
+                reason.textContent = change.reason;
+                header.appendChild(reason);
+            }
+            card.appendChild(header);
+
+            const grid = document.createElement('div');
+            grid.className = 'pf-comparison-grid';
+            const columnTones = {
+                added: ['is-neutral', 'is-added'],
+                modified: ['is-neutral', 'is-modified'],
+                removed: ['is-removed', 'is-neutral'],
+                unchanged: ['is-unchanged', 'is-unchanged'],
+            }[change.type] || ['is-neutral', 'is-modified'];
+            appendComparisonColumn(grid, '修改前', materializeComparisonText(change.before), columnTones[0], '无对应原文');
+            appendComparisonColumn(grid, '修改后', materializeComparisonText(change.after), columnTones[1], '已删除');
+            card.appendChild(grid);
+            container.appendChild(card);
+        }
+        return;
+    }
+
+    const sourceText = materializeComparisonText(comparison.sourceText);
+    const finalText = renderStructuredResult(state.structuredResult, state.selectedCandidateIndex, 'natural');
+    if (!sourceText) {
+        const empty = document.createElement('div');
+        empty.className = 'pf-comparison-empty';
+        empty.textContent = '这份旧结果没有保存修改记录，请重新优化一次后查看对比。';
+        container.appendChild(empty);
+        return;
+    }
+
+    const note = document.createElement('p');
+    note.className = 'pf-comparison-note';
+    note.textContent = '模型没有返回结构化修改记录，以下是本地文本差异。栏目重排可能被识别为修改。';
+    container.appendChild(note);
+    const fallback = document.createElement('div');
+    fallback.className = 'pf-local-diff';
+    for (const part of buildLocalTextDiff(sourceText, finalText)) {
+        const span = document.createElement('span');
+        span.className = `pf-diff-part is-${part.type}`;
+        span.textContent = part.text;
+        fallback.appendChild(span);
+    }
+    container.appendChild(fallback);
+}
+
+function hasRefinementComparison() {
+    const result = state.structuredResult;
+    if (result?.options?.mode !== 'refine' || !result.comparison) return false;
+    return Boolean(result.comparison.sourceText || result.comparison.changeLog?.length);
+}
+
+function updateResultView() {
+    const root = state.overlay;
+    if (!root) return;
+    const toolbar = root.querySelector('#pf-refinement-view-toolbar');
+    const comparison = root.querySelector('#pf-comparison');
+    const result = root.querySelector('#pf-result');
+    const outputToolbar = root.querySelector('#pf-output-toolbar');
+    const empty = root.querySelector('#pf-empty');
+    const canCompare = hasRefinementComparison();
+    if (!canCompare) state.resultView = 'persona';
+    const comparing = canCompare && state.resultView === 'comparison';
+
+    if (toolbar) toolbar.hidden = !canCompare;
+    root.querySelectorAll('[data-result-view]').forEach(button => {
+        const active = button.dataset.resultView === (comparing ? 'comparison' : 'persona');
+        button.classList.toggle('is-active', active);
+        button.setAttribute('aria-selected', String(active));
+    });
+    if (outputToolbar) outputToolbar.hidden = comparing;
+    if (comparison) comparison.hidden = !comparing;
+    if (result) result.hidden = comparing || !result.textContent;
+    if (empty) empty.hidden = comparing || Boolean(result?.textContent);
+    if (comparing) renderRefinementComparison();
+
+    const copy = root.querySelector('#pf-copy');
+    if (copy) copy.title = comparing ? '复制优化后人设，不包含修改对比' : '';
+}
+
+function setResultView(view) {
+    state.resultView = view === 'comparison' && hasRefinementComparison()
+        ? 'comparison'
+        : 'persona';
+    updateResultView();
+}
+
 function renderCandidateButtons() {
     const root = state.overlay;
     const panel = root?.querySelector('#pf-candidate-panel');
@@ -2041,6 +2320,7 @@ function renderCurrentResult(meta = '生成完成，可切换姓名和输出格�
     const text = renderStructuredResult(state.structuredResult, state.selectedCandidateIndex, format);
     renderCandidateButtons();
     setResult(text, meta);
+    updateResultView();
 }
 
 function setLoading(loading) {
@@ -2057,7 +2337,7 @@ function setLoading(loading) {
     copy.disabled = loading || !root.querySelector('#pf-result')?.textContent?.trim();
     if (cancel) cancel.hidden = !loading;
     if (rerollNamesButton) rerollNamesButton.disabled = loading;
-    root.querySelectorAll('.pf-name-button, .pf-format-button, .pf-segment[data-mode]').forEach(button => {
+    root.querySelectorAll('.pf-name-button, .pf-format-button, .pf-view-button, .pf-segment[data-mode]').forEach(button => {
         button.disabled = loading;
     });
     generate.classList.toggle('is-loading', loading);
@@ -2104,6 +2384,10 @@ function setStreamingPreview(text = '', info = {}) {
     const empty = root.querySelector('#pf-empty');
     const value = String(text ?? '');
     const status = formatStreamStatus(info, value);
+    state.resultView = 'persona';
+    root.querySelector('#pf-refinement-view-toolbar').hidden = true;
+    root.querySelector('#pf-comparison').hidden = true;
+    root.querySelector('#pf-output-toolbar').hidden = false;
     result.textContent = value;
     result.hidden = !value;
     empty.hidden = Boolean(value);
@@ -2127,6 +2411,10 @@ function setStreamingFallbackPreview(reason = '') {
     const message = `流式连接未成功，正在切换普通生成${reason ? `：${reason}` : '…'}`;
     const empty = root.querySelector('#pf-empty');
     const result = root.querySelector('#pf-result');
+    state.resultView = 'persona';
+    root.querySelector('#pf-refinement-view-toolbar').hidden = true;
+    root.querySelector('#pf-comparison').hidden = true;
+    root.querySelector('#pf-output-toolbar').hidden = false;
     result.hidden = true;
     result.textContent = '';
     empty.hidden = false;
@@ -2147,6 +2435,7 @@ function setResult(text, meta = '生成完成') {
     root.querySelector('#pf-result-meta').textContent = meta;
     root.querySelector('#pf-copy').disabled = false;
     root.querySelector('#pf-regenerate').disabled = false;
+    updateResultView();
 }
 
 function setResultError(message) {
@@ -2158,6 +2447,9 @@ function setResultError(message) {
     result.textContent = '';
     const candidatePanel = root.querySelector('#pf-candidate-panel');
     if (candidatePanel) candidatePanel.hidden = true;
+    root.querySelector('#pf-refinement-view-toolbar').hidden = true;
+    root.querySelector('#pf-comparison').hidden = true;
+    root.querySelector('#pf-output-toolbar').hidden = false;
     empty.hidden = false;
     empty.textContent = `生成失败：${message}`;
     root.querySelector('#pf-result-meta').textContent = '请检查当前 API 连接后重试。';
