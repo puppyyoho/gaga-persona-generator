@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 
 const indexSource = fs.readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+const compatSource = fs.readFileSync(new URL('../st-compat.js', import.meta.url), 'utf8');
 const manifest = JSON.parse(fs.readFileSync(new URL('../manifest.json', import.meta.url), 'utf8'));
 
 const ids = [...indexSource.matchAll(/\bid="([^"]+)"/g)].map(match => match[1]);
@@ -18,6 +19,15 @@ assert.deepEqual(missingIds, [], 'A queried UI ID is missing from the static tem
 
 const version = indexSource.match(/const VERSION = '([^']+)'/)?.[1];
 assert.equal(version, manifest.version, 'Manifest and runtime versions must match');
+assert.equal(manifest.minimum_client_version, '1.14.0');
+assert.match(indexSource, /initializeHostCompatibility/);
+assert.match(indexSource, /buildLegacyChatStreamingPayload/);
+assert.match(indexSource, /buildLegacyTextStreamingPayload/);
+assert.match(indexSource, /detectHostCapabilities/);
+assert.match(indexSource, /generateRawCompat/);
+assert.match(indexSource, /readOpeningGreetingCompat/);
+assert.match(indexSource, /subscribeHostEvents/);
+assert.match(indexSource, /旧版酒馆兼容模式已启用/);
 assert.match(indexSource, /buildPersonaSystemPrompt\(\)/);
 assert.match(indexSource, /buildPersonaRefinementPrompt/);
 assert.match(indexSource, /buildPersonaRefinementSystemPrompt/);
@@ -46,7 +56,7 @@ assert.match(indexSource, /normalizeLengthPreset/);
 assert.match(indexSource, /pf-reference-greeting/);
 assert.match(indexSource, /referenceGreeting/);
 assert.match(indexSource, /first_mes/);
-assert.match(indexSource, /ctx\.chat\) \? ctx\.chat\[0\]/);
+assert.match(compatSource, /ctx\?\.chat\) \? ctx\.chat\[0\]/);
 assert.match(indexSource, /getOpeningGreetingReference/);
 assert.match(indexSource, /collectOpeningGreeting/);
 assert.match(indexSource, /pf-refinement-view-toolbar/);

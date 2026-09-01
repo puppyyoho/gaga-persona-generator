@@ -19,11 +19,22 @@ import {
     resolveTargetLength,
     renderStructuredResult,
 } from './persona-data.js';
+import {
+    buildLegacyChatStreamingPayload,
+    buildLegacyTextStreamingPayload,
+    detectHostCapabilities,
+    generateRawCompat,
+    getHostContext,
+    initializeHostCompatibility,
+    readOpeningGreetingCompat,
+    readPersonaCompat,
+    subscribeHostEvents,
+} from './st-compat.js';
 
 const EXTENSION_NAME = 'persona-forge';
 const DISPLAY_NAME = '嘎嘎人设生成器';
 const SETTINGS_KEY = 'personaForge';
-const VERSION = '0.6.7';
+const VERSION = '0.7.0';
 const FAB_ICON_URL = new URL('./icon.png', import.meta.url).href;
 const MAX_LORE_CHARS_DEFAULT = 52000;
 
@@ -45,14 +56,11 @@ const state = {
     structuredResult: null,
     selectedCandidateIndex: 0,
     resultView: 'persona',
+    capabilities: null,
 };
 
 function getContext() {
-    const st = globalThis.SillyTavern;
-    if (!st?.getContext) {
-        throw new Error('未检测到 SillyTavern.getContext()。请确认 SillyTavern 版本不低于 1.18.0。');
-    }
-    return st.getContext();
+    return getHostContext();
 }
 
 function notify(type, message) {
@@ -98,13 +106,7 @@ function getCharacterName(character) {
 }
 
 function getCurrentPersonaContext(ctx = getContext()) {
-    const powerUser = ctx.powerUserSettings && typeof ctx.powerUserSettings === 'object'
-        ? ctx.powerUserSettings
-        : {};
-    return {
-        name: String(ctx.name1 ?? '').trim(),
-        description: String(powerUser.persona_description ?? '').trim(),
-    };
+    return readPersonaCompat(ctx);
 }
 
 function getCharacterPrimaryWorld(character) {
@@ -305,6 +307,7 @@ function createStaticUi() {
 
             <div class="pf-scroll">
                 <section class="pf-card pf-status-card">
+                    <div class="pf-compat-note" id="pf-compat-note" hidden></div>
                     <div class="pf-status-grid">
                         <div>
                             <span class="pf-label-mini">当前角色</span>
@@ -1427,6 +1430,10 @@ function getContextBudgets() {
 
 async function collectWorldLore(characterContextLength = 0) {
     const ctx = getContext();
+    const runtime = await getWorldInfoRuntime();
+    const loadWorldInfo = typeof ctx.loadWorldInfo === 'function'
+        ? ctx.loadWorldInfo.bind(ctx)
+        : (typeof runtime.loadWorldInfo === 'function' ? runtime.loadWorldInfo : null);
     const settings = ensureSettings();
     const budgets = getContextBudgets();
     const configuredLimit = Math.max(1500, Number(settings.maxLoreChars) || MAX_LORE_CHARS_DEFAULT);
@@ -1437,7 +1444,7 @@ async function collectWorldLore(characterContextLength = 0) {
 
     for (const name of state.selectedWorldNames) {
         try {
-            const book = await ctx.loadWorldInfo?.(name);
+            const book = loadWorldInfo ? await loadWorldInfo(name) : null;
             if (book) entries.push(...extractEntries(book, name));
             else failures.push(name);
         } catch (error) {
@@ -1511,22 +1518,7 @@ function getOpeningGreetingReference(
     character = getCurrentCharacter(getContext()),
     ctx = getContext(),
 ) {
-    const firstMessage = Array.isArray(ctx.chat) ? ctx.chat[0] : null;
-    const activeGreeting = firstMessage && !firstMessage.is_user && !firstMessage.is_system
-        ? String(firstMessage.mes || '').trim()
-        : '';
-    if (activeGreeting) {
-        return {
-            text: activeGreeting,
-            source: '当前聊天正在显示的开场白',
-        };
-    }
-
-    const defaultGreeting = getCharacterDefaultGreeting(character);
-    return {
-        text: defaultGreeting,
-        source: defaultGreeting ? '角色卡默认开场白（第一个）' : '',
-    };
+    return readOpeningGreetingCompat(ctx, getCharacterDefaultGreeting(character));
 }
 
 function updateGreetingReferenceUi(character = getCurrentCharacter(getContext())) {
@@ -1745,15 +1737,23 @@ async function buildCoreChatStreamingPayload(ctx, currentApi, messages) {
     // to the native streaming path. Build with the same "normal" path used by
     // the main chat, then remove chat-only tools and multi-swipe fields.
     const runtime = await import('/scripts/openai.js');
-    if (typeof runtime.createGenerationParameters !== 'function') {
-        throw new Error('当前 SillyTavern 未导出原生 Chat Completion 参数构造器');
-    }
-
     const settings = cloneSettings(currentApi.settings);
     settings.stream_openai = true;
-    const model = ctx.getChatCompletionModel?.(settings);
-    const built = await runtime.createGenerationParameters(settings, model, 'normal', messages);
-    const payload = built?.generate_data;
+    let payload;
+    if (typeof runtime.createGenerationParameters === 'function') {
+        const model = ctx.getChatCompletionModel?.(settings)
+            ?? runtime.getChatCompletionModel?.(settings.chat_completion_source);
+        const built = await runtime.createGenerationParameters(settings, model, 'normal', messages);
+        payload = built?.generate_data;
+    } else {
+        // SillyTavern 1.14-1.17 exposes the streaming request service but not
+        // createGenerationParameters(). Recreate the public request shape from
+        // active settings without mutating the user's preset.
+        const model = runtime.getChatCompletionModel?.(settings.chat_completion_source)
+            ?? ctx.getChatCompletionModel?.(settings.chat_completion_source)
+            ?? settings.model;
+        payload = buildLegacyChatStreamingPayload(settings, messages, model, currentApi.service);
+    }
     if (!payload || typeof payload !== 'object') {
         throw new Error('无法构造原生 Chat Completion 流式请求');
     }
@@ -1864,11 +1864,24 @@ async function generateRawWithStreaming(ctx, { systemPrompt, prompt, maxTokens, 
                     overridePayload.max_new_tokens = Math.floor(configuredLimit);
                 }
             }
-            const payload = currentApi.service.presetToGeneratePayload(
+            const presetPayload = currentApi.service.presetToGeneratePayload(
                 settings,
                 {},
                 overridePayload,
             );
+            // SillyTavern 1.14-1.17 ignores the third override argument. Merge
+            // it again so prompt and stream survive on both old and new services.
+            const hasAppliedOverrides = presetPayload?.prompt === finalPrompt
+                && presetPayload?.stream === true;
+            const payload = hasAppliedOverrides
+                ? presetPayload
+                : buildLegacyTextStreamingPayload(
+                    settings,
+                    presetPayload,
+                    overridePayload,
+                    currentApi.service,
+                    ctx.getTextGenServer?.(settings.api_type ?? settings.type),
+                );
             const readyEvent = ctx.eventTypes?.TEXT_COMPLETION_SETTINGS_READY;
             if (readyEvent && typeof ctx.eventSource?.emit === 'function') {
                 await ctx.eventSource.emit(readyEvent, payload);
@@ -1940,8 +1953,8 @@ async function generateRawWithStreaming(ctx, { systemPrompt, prompt, maxTokens, 
 async function generatePersona() {
     if (state.generating) return;
     const ctx = getContext();
-    if (typeof ctx.generateRaw !== 'function') {
-        notify('error', '当前版本未提供 generateRaw()。');
+    if (!state.capabilities?.generation) {
+        notify('error', '当前版本未提供可用的人设生成接口。');
         return;
     }
 
@@ -2012,7 +2025,7 @@ async function generatePersona() {
         if (streamState.text) {
             resultText = streamState.text;
         } else {
-            resultText = await ctx.generateRaw({ systemPrompt, prompt });
+            resultText = await generateRawCompat(ctx, { systemPrompt, prompt });
         }
 
         if (generationId !== state.generationEpoch) return;
@@ -2075,14 +2088,14 @@ async function rerollNames() {
     }
 
     const ctx = getContext();
-    if (typeof ctx.generateRaw !== 'function') return;
+    if (!state.capabilities?.generation) return;
     const count = Number(state.structuredResult.options?.nameCount) || Number(ensureSettings().nameCount) || 5;
     const generationId = ++state.generationEpoch;
     state.generating = true;
     setLoading(true);
 
     try {
-        const result = await ctx.generateRaw({
+        const result = await generateRawCompat(ctx, {
             systemPrompt: buildPersonaSystemPrompt(),
             prompt: buildNameRerollPrompt(state.structuredResult, count),
         });
@@ -2553,10 +2566,6 @@ async function copyCurrentResult() {
 
 function bindContextEvents() {
     const ctx = getContext();
-    const source = ctx.eventSource;
-    const types = ctx.eventTypes ?? ctx.event_types;
-    if (!source?.on || !types) return;
-
     const refresh = () => {
         if (!state.overlay?.classList.contains('is-open')) return;
         state.lastContextSignature = '';
@@ -2573,16 +2582,23 @@ function bindContextEvents() {
         'MESSAGE_SWIPED',
     ];
 
-    for (const key of candidates) {
-        if (types[key]) source.on(types[key], refresh);
-    }
+    subscribeHostEvents(ctx, candidates, refresh);
 }
 
 export async function init() {
     try {
+        await initializeHostCompatibility();
+        state.capabilities = detectHostCapabilities(getContext());
         createStaticUi();
         createSettingsUi();
         ensureSettings();
+        const compatibilityNote = state.overlay?.querySelector('#pf-compat-note');
+        if (compatibilityNote && state.capabilities.compatibilityMode) {
+            compatibilityNote.hidden = false;
+            compatibilityNote.textContent = state.capabilities.missing.length
+                ? `旧版兼容模式：${state.capabilities.missing.join('、')}不可用，其余功能已自动适配。`
+                : '旧版酒馆兼容模式已启用，现有功能将按可用接口自动适配。';
+        }
         updateFloatingButton();
         bindContextEvents();
         await detectWorldBooks();

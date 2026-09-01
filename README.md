@@ -133,6 +133,14 @@ Chat Completion 会使用与主聊天相同的 `normal` 流式参数构造路径
 
 ## 兼容说明
 
+从 v0.7.0 起，最低支持 SillyTavern 1.14.0。插件会在启动时检测宿主实际提供的接口，新版继续使用完整实现；1.14–1.17 缺少某项新版接口时自动进入兼容路径，不会修改用户当前的生成预设。
+
+- 普通生成优先使用 `generateRaw()`；极少数缺失该接口的构建会回退到 `generateQuietPrompt()`。
+- 1.14–1.17 没有新版 Chat Completion 参数构造器时，会从当前连接设置构造等价的流式请求。
+- 旧版 Text Completion 忽略流式覆盖参数时，兼容层会显式补回 `prompt` 与 `stream`。
+- `getWorldInfoNames()` 不存在时，继续从 `world-info.js` 的公开运行时数据识别世界书。
+- 宿主缺失的能力会在插件顶部提示；其余可用功能不会被连带关闭。
+
 主要公开调用来自 SillyTavern.getContext()：
 
 - generateRaw()
@@ -147,6 +155,8 @@ Chat Completion 会使用与主聊天相同的 `normal` 流式参数构造路径
 - eventSource / eventTypes
 - stopGeneration()
 
+宿主访问与降级逻辑集中在 `st-compat.js`，新版功能路径和旧版回退路径互不覆盖。
+
 为了识别全局启用和角色附加世界书，扩展还会只读动态导入 world-info.js 中的 selected_world_info 与 world_info.charLore。导入失败时会自动降级。
 
 ## 文件
@@ -154,6 +164,7 @@ Chat Completion 会使用与主聊天相同的 `normal` 流式参数构造路径
 - manifest.json：扩展清单
 - index.js：SillyTavern 上下文、界面、模型调用与状态管理
 - persona-data.js：栏目定义、结构化 Prompt、候选姓名、YAML 与自然语言渲染
+- st-compat.js：SillyTavern 1.14+ 能力检测、上下文读取与生成接口回退
 - style.css：桌面、平板与手机响应式样式
 - LICENSE：CC BY-NC-SA 4.0（署名、非商业性使用、相同方式共享）
 
