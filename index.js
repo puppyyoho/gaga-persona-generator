@@ -38,8 +38,9 @@ import {
 const EXTENSION_NAME = 'persona-forge';
 const DISPLAY_NAME = '嘎嘎人设生成器';
 const SETTINGS_KEY = 'personaForge';
-const VERSION = '0.7.1';
+const VERSION = '0.7.2';
 const FAB_ICON_URL = new URL('./icon.png', import.meta.url).href;
+const DEFAULT_FAB_SIZE = 65;
 const MAX_LORE_CHARS_DEFAULT = 52000;
 
 const state = {
@@ -225,6 +226,8 @@ function ensureSettings() {
     const defaults = {
         showFloatingButton: true,
         floatingPosition: null,
+        floatingSize: DEFAULT_FAB_SIZE,
+        floatingIcon: '',
         maxLoreChars: MAX_LORE_CHARS_DEFAULT,
         lastResult: '',
         lastStructuredResult: null,
@@ -256,6 +259,11 @@ function ensureSettings() {
     const migrated = {
         ...defaults,
         ...current,
+        floatingSize: clampFloatingSize(current.floatingSize ?? defaults.floatingSize),
+        floatingIcon: typeof current.floatingIcon === 'string'
+            && current.floatingIcon.startsWith('data:image/')
+            ? current.floatingIcon
+            : '',
         lengthPreset: normalizeLengthPreset(current.lengthPreset),
         customTargetLength: resolveTargetLength(
             'custom',
@@ -573,6 +581,22 @@ function createSettingsUi() {
                     <input id="pf-show-fab" type="checkbox" ${settings.showFloatingButton ? 'checked' : ''}>
                     <span>显示悬浮入口（可拖动，手机端也显示）</span>
                 </label>
+                <div class="pf-fab-settings" aria-label="悬浮入口设置">
+                    <div class="pf-fab-setting-head">
+                        <span>悬浮窗图标大小</span>
+                        <output id="pf-fab-size-value" for="pf-fab-size">${clampFloatingSize(settings.floatingSize)} px</output>
+                    </div>
+                    <div class="pf-fab-size-row">
+                        <input id="pf-fab-size" type="range" min="40" max="120" step="1" value="${clampFloatingSize(settings.floatingSize)}">
+                        <button type="button" class="pf-mini-button" id="pf-reset-fab-size">恢复默认大小</button>
+                    </div>
+                    <div class="pf-fab-icon-actions">
+                        <button type="button" class="pf-mini-button" id="pf-upload-icon">上传自定义图标</button>
+                        <button type="button" class="pf-mini-button" id="pf-reset-icon">恢复默认图标</button>
+                        <input id="pf-icon-file" type="file" accept="image/png,image/jpeg,image/gif,image/webp" hidden>
+                    </div>
+                    <small class="pf-fab-setting-help">支持 PNG、JPG、GIF、WebP，单张不超过 2 MB。图片只保存在当前酒馆设置中。</small>
+                </div>
             </div>
         </div>
     `;
@@ -585,6 +609,69 @@ function createSettingsUi() {
         saveSettings();
         updateFloatingButton();
     });
+
+    const sizeInput = block.querySelector('#pf-fab-size');
+    const sizeValue = block.querySelector('#pf-fab-size-value');
+    const syncFabSizeUi = value => {
+        const size = clampFloatingSize(value);
+        if (sizeInput) sizeInput.value = String(size);
+        if (sizeValue) sizeValue.textContent = `${size} px`;
+    };
+    sizeInput?.addEventListener('input', event => {
+        const size = clampFloatingSize(event.target.value);
+        settings.floatingSize = size;
+        syncFabSizeUi(size);
+        updateFloatingButton();
+        saveSettings();
+    });
+    block.querySelector('#pf-reset-fab-size')?.addEventListener('click', () => {
+        settings.floatingSize = DEFAULT_FAB_SIZE;
+        syncFabSizeUi(DEFAULT_FAB_SIZE);
+        updateFloatingButton();
+        saveSettings();
+    });
+
+    const iconFile = block.querySelector('#pf-icon-file');
+    block.querySelector('#pf-upload-icon')?.addEventListener('click', () => iconFile?.click());
+    iconFile?.addEventListener('change', event => {
+        const file = event.target.files?.[0];
+        event.target.value = '';
+        if (!file) return;
+        const accepted = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
+        if (!accepted.includes(file.type)) {
+            notify('error', '请选择 PNG、JPG、GIF 或 WebP 图片。');
+            return;
+        }
+        if (file.size > 2 * 1024 * 1024) {
+            notify('error', '图片不能超过 2 MB。');
+            return;
+        }
+        const reader = new FileReader();
+        reader.onload = () => {
+            if (typeof reader.result !== 'string' || !reader.result.startsWith('data:image/')) {
+                notify('error', '无法读取这张图片。');
+                return;
+            }
+            settings.floatingIcon = reader.result;
+            saveSettings();
+            updateFloatingButton();
+            notify('success', '已应用自定义悬浮窗图标。');
+        };
+        reader.onerror = () => notify('error', '读取图片失败，请重试。');
+        reader.readAsDataURL(file);
+    });
+    block.querySelector('#pf-reset-icon')?.addEventListener('click', () => {
+        settings.floatingIcon = '';
+        saveSettings();
+        updateFloatingButton();
+        notify('success', '已恢复默认悬浮窗图标。');
+    });
+}
+
+function clampFloatingSize(value) {
+    const size = Number(value);
+    if (!Number.isFinite(size)) return DEFAULT_FAB_SIZE;
+    return Math.min(120, Math.max(40, Math.round(size)));
 }
 
 function isPhoneViewport() {
@@ -688,6 +775,17 @@ function bindFloatingDrag(button) {
     });
 }
 
+function setFloatingSize(button, value) {
+    const size = clampFloatingSize(value);
+    button.style.setProperty('--pf-fab-size', `${size}px`);
+    return size;
+}
+
+function getFloatingIconSrc(settings = ensureSettings()) {
+    const custom = String(settings.floatingIcon || '').trim();
+    return custom.startsWith('data:image/') ? custom : FAB_ICON_URL;
+}
+
 function updateFloatingButton() {
     const settings = ensureSettings();
     let button = document.getElementById('pf-fab');
@@ -707,9 +805,12 @@ function updateFloatingButton() {
         button.setAttribute('aria-label', `打开${DISPLAY_NAME}（可拖动）`);
         button.innerHTML = `<img class="pf-fab-icon" src="${FAB_ICON_URL}" alt="" aria-hidden="true" draggable="false">`;
         document.body.appendChild(button);
-        restoreFloatingPosition(button);
         bindFloatingDrag(button);
     }
+    setFloatingSize(button, settings.floatingSize);
+    const icon = button.querySelector('.pf-fab-icon');
+    if (icon && icon.src !== getFloatingIconSrc(settings)) icon.src = getFloatingIconSrc(settings);
+    restoreFloatingPosition(button);
     // Keep the entry visible on every viewport. Mobile gets a compact variant via CSS.
     button.hidden = false;
     button.classList.toggle('is-mobile', mobileViewport);
