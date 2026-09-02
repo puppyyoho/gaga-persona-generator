@@ -1003,11 +1003,11 @@ html.pf-modal-open body {
     display: flex;
     align-items: center;
     justify-content: center;
-    border: 1px solid color-mix(in srgb, var(--pf-accent) 50%, transparent);
-    border-radius: 999px;
-    background: var(--pf-card);
+    border: 0;
+    border-radius: 0;
+    background: transparent;
     color: var(--pf-text);
-    box-shadow: 0 8px 28px rgba(0, 0, 0, .28);
+    box-shadow: none;
     cursor: grab;
     user-select: none;
     touch-action: none;
@@ -1021,11 +1021,11 @@ html.pf-modal-open body {
     display: block;
     width: 100%;
     height: 100%;
-    border-radius: inherit;
     object-fit: contain;
-    box-sizing: border-box;
-    padding: 2px;
-    background: #fff;
+    border: 0;
+    padding: 0;
+    background: transparent;
+    filter: drop-shadow(0 5px 12px rgba(0, 0, 0, .22));
     pointer-events: none;
     user-select: none;
 }
@@ -1033,7 +1033,6 @@ html.pf-modal-open body {
 .pf-fab.is-dragging {
     cursor: grabbing;
     transform: scale(.96);
-    box-shadow: 0 10px 32px rgba(0, 0, 0, .36);
 }
 
 .pf-fab-grip {
