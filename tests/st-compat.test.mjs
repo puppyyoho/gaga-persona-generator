@@ -3,9 +3,12 @@ import {
     buildLegacyChatStreamingPayload,
     buildLegacyTextStreamingPayload,
     detectHostCapabilities,
+    extractGeneratedTextCompat,
+    getActiveModelInfo,
     generateRawCompat,
     readOpeningGreetingCompat,
     readPersonaCompat,
+    readSelectedConnectionProfile,
     subscribeHostEvents,
 } from '../st-compat.js';
 
@@ -26,6 +29,32 @@ assert.equal(modernCapabilities.compatibilityMode, false);
 assert.equal(modernCapabilities.generation, true);
 assert.equal(modernCapabilities.streaming, true);
 assert.deepEqual(modernCapabilities.missing, []);
+
+const rawDataContext = {
+    mainApi: 'openai',
+    async generateRawData() {
+        return { choices: [{ message: { content: '{"profile":{}}' } }] };
+    },
+    extractMessageFromData(data) {
+        return data.choices?.[0]?.message?.content || '';
+    },
+};
+assert.equal(
+    await generateRawCompat(rawDataContext, { prompt: '原始响应' }),
+    '{"profile":{}}',
+);
+assert.equal(
+    extractGeneratedTextCompat({}, { choices: [{ text: '回退提取' }] }, 'textgenerationwebui'),
+    '回退提取',
+);
+await assert.rejects(
+    () => generateRawCompat({
+        async generateRawData() {
+            return { reasoning: '我正在思考' };
+        },
+    }, { prompt: '只有思考' }),
+    /只返回了思考内容/,
+);
 
 const legacy114 = {
     generateRaw: async request => request.prompt,
@@ -65,6 +94,27 @@ assert.deepEqual(
     readPersonaCompat({ powerUserSettings: { name1: '旧U', personaDescription: '旧字段描述' } }),
     { name: '旧U', description: '旧字段描述' },
 );
+
+const liveSettings = { chat_completion_source: 'openai', openai_model: '初始模型' };
+const liveModelContext = {
+    mainApi: 'openai',
+    chatCompletionSettings: liveSettings,
+    getChatCompletionModel: settings => settings.openai_model,
+};
+assert.equal(getActiveModelInfo(liveModelContext).model, '初始模型');
+liveSettings.openai_model = '切换后的模型';
+assert.equal(getActiveModelInfo(liveModelContext).model, '切换后的模型');
+const profileContext = {
+    ...liveModelContext,
+    extensionSettings: {
+        connectionManager: {
+            selectedProfile: 'profile-1',
+            profiles: [{ id: 'profile-1', name: '备用连接', model: '配置模型' }],
+        },
+    },
+};
+assert.equal(readSelectedConnectionProfile(profileContext).name, '备用连接');
+assert.equal(getActiveModelInfo(profileContext).label, '备用连接 · 切换后的模型');
 
 assert.deepEqual(
     readOpeningGreetingCompat({ chat: [{ is_user: false, mes: '正在显示的备用开场白' }] }, '默认开场白'),
