@@ -42,6 +42,13 @@ const VERSION = '0.7.1';
 const FAB_ICON_URL = new URL('./icon.png', import.meta.url).href;
 const MAX_LORE_CHARS_DEFAULT = 52000;
 
+const EXTENSION_NAME = 'persona-forge';
+const DISPLAY_NAME = '嘎嘎人设生成器';
+const SETTINGS_KEY = 'personaForge';
+const VERSION = '0.7.0';
+const FAB_ICON_URL = new URL('./icon.png', import.meta.url).href;
+const MAX_LORE_CHARS_DEFAULT = 52000;
+
 const state = {
     overlay: null,
     panel: null,
@@ -688,6 +695,107 @@ function bindFloatingDrag(button) {
     });
 }
 
+function isPhoneViewport() {
+    return window.matchMedia?.('(max-width: 600px)').matches ?? window.innerWidth <= 600;
+}
+
+function clampFloatingPosition(button, left, top) {
+    const rect = button.getBoundingClientRect();
+    const margin = 8;
+    const maxLeft = Math.max(margin, window.innerWidth - rect.width - margin);
+    const maxTop = Math.max(margin, window.innerHeight - rect.height - margin);
+    return {
+        left: Math.min(Math.max(margin, Number(left) || margin), maxLeft),
+        top: Math.min(Math.max(margin, Number(top) || margin), maxTop),
+    };
+}
+
+function setFloatingPosition(button, left, top, persist = false) {
+    const position = clampFloatingPosition(button, left, top);
+    button.style.left = `${position.left}px`;
+    button.style.top = `${position.top}px`;
+    button.style.right = 'auto';
+    button.style.bottom = 'auto';
+    if (persist) {
+        ensureSettings().floatingPosition = {
+            left: Math.round(position.left),
+            top: Math.round(position.top),
+        };
+        saveSettings();
+    }
+    return position;
+}
+
+function restoreFloatingPosition(button) {
+    const saved = ensureSettings().floatingPosition;
+    if (!saved || typeof saved !== 'object') return;
+    const left = Number(saved.left);
+    const top = Number(saved.top);
+    if (Number.isFinite(left) && Number.isFinite(top)) setFloatingPosition(button, left, top);
+}
+
+function constrainFloatingButton() {
+    const button = document.getElementById('pf-fab');
+    const saved = ensureSettings().floatingPosition;
+    if (!button || !saved) return;
+    const left = Number.parseFloat(button.style.left);
+    const top = Number.parseFloat(button.style.top);
+    if (Number.isFinite(left) && Number.isFinite(top)) setFloatingPosition(button, left, top, true);
+}
+
+function bindFloatingDrag(button) {
+    if (button.dataset.dragBound === 'true') return;
+    button.dataset.dragBound = 'true';
+    let drag = null;
+
+    button.addEventListener('pointerdown', event => {
+        if (event.pointerType === 'mouse' && event.button !== 0) return;
+        const rect = button.getBoundingClientRect();
+        drag = {
+            pointerId: event.pointerId,
+            startX: event.clientX,
+            startY: event.clientY,
+            left: rect.left,
+            top: rect.top,
+            moved: false,
+        };
+        setFloatingPosition(button, rect.left, rect.top);
+        button.classList.add('is-dragging');
+        button.setPointerCapture?.(event.pointerId);
+        event.preventDefault();
+    });
+
+    button.addEventListener('pointermove', event => {
+        if (!drag || event.pointerId !== drag.pointerId) return;
+        const deltaX = event.clientX - drag.startX;
+        const deltaY = event.clientY - drag.startY;
+        if (Math.hypot(deltaX, deltaY) > 4) drag.moved = true;
+        setFloatingPosition(button, drag.left + deltaX, drag.top + deltaY);
+        event.preventDefault();
+    });
+
+    const finishDrag = event => {
+        if (!drag || event.pointerId !== drag.pointerId) return;
+        if (button.hasPointerCapture?.(event.pointerId)) button.releasePointerCapture(event.pointerId);
+        button.classList.remove('is-dragging');
+        if (drag.moved) {
+            button.dataset.dragged = 'true';
+            setFloatingPosition(button, Number.parseFloat(button.style.left), Number.parseFloat(button.style.top), true);
+        }
+        drag = null;
+    };
+    button.addEventListener('pointerup', finishDrag);
+    button.addEventListener('pointercancel', finishDrag);
+    button.addEventListener('click', event => {
+        if (button.dataset.dragged === 'true') {
+            button.dataset.dragged = '';
+            event.preventDefault();
+            return;
+        }
+        openPanel();
+    });
+}
+
 function updateFloatingButton() {
     const settings = ensureSettings();
     let button = document.getElementById('pf-fab');
@@ -1037,16 +1145,16 @@ function syncControlsFromSettings() {
     setOutputFormat(settings.lastOutputFormat || 'natural', false);
 }
 
-function bindUiEvents() {
+function renderSectionOptions() {
     const root = state.overlay;
-    root.querySelector('#pf-close')?.addEventListener('click', closePanel);
-    root.addEventListener('pointerdown', event => {
-        if (event.target === root) closePanel();
-    });
+    const container = root?.querySelector('#pf-section-groups');
+    if (!container) return;
+    const settings = ensureSettings();
+    container.replaceChildren();
 
-    document.addEventListener('keydown', event => {
-        if (event.key === 'Escape' && state.overlay?.classList.contains('is-open')) closePanel();
-    });
+    for (const group of SECTION_GROUPS) {
+        const section = document.createElement('section');
+        section.className = 'pf-option-group';
 
     root.querySelectorAll('.pf-segment[data-mode]').forEach(button => {
         button.addEventListener('click', () => setMode(button.dataset.mode));
@@ -1248,6 +1356,10 @@ function currentMode() {
     return state.overlay?.querySelector('.pf-segment[data-mode].is-active')?.dataset.mode || 'random';
 }
 
+function currentMode() {
+    return state.overlay?.querySelector('.pf-segment[data-mode].is-active')?.dataset.mode || 'random';
+}
+
 async function openPanel() {
     createStaticUi();
     await refreshContextUi(false);
@@ -1257,6 +1369,31 @@ async function openPanel() {
     syncControlsFromSettings();
     renderSectionOptions();
     state.resultView = 'persona';
+
+    if (settings.lastStructuredResult && typeof settings.lastStructuredResult === 'object') {
+        state.structuredResult = settings.lastStructuredResult;
+        state.selectedCandidateIndex = Math.min(
+            Number(settings.lastSelectedCandidateIndex) || 0,
+            Math.max(0, (state.structuredResult.candidates?.length || 1) - 1),
+        );
+        renderCurrentResult('上次生成结果');
+    } else {
+        const saved = String(settings.lastResult || '');
+        if (saved) setResult(saved, '上次生成结果');
+    }
+
+    state.overlay.classList.add('is-open');
+    state.overlay.setAttribute('aria-hidden', 'false');
+    document.documentElement.classList.add('pf-modal-open');
+    state.overlay.querySelector('#pf-close')?.focus({ preventScroll: true });
+}
+
+function closePanel() {
+    if (!state.overlay) return;
+    state.overlay.classList.remove('is-open');
+    state.overlay.setAttribute('aria-hidden', 'true');
+    document.documentElement.classList.remove('pf-modal-open');
+}
 
     if (settings.lastStructuredResult && typeof settings.lastStructuredResult === 'object') {
         state.structuredResult = settings.lastStructuredResult;
@@ -1301,6 +1438,8 @@ async function refreshContextUi(force = false) {
         : '当前未选择单角色；仍可使用全局与聊天世界书生成。';
     const modelLabel = state.overlay.querySelector('#pf-generation-model');
     if (modelLabel) modelLabel.textContent = getActiveModelInfo(ctx).label;
+
+    updateGreetingReferenceUi(character);
 
     updateGreetingReferenceUi(character);
 
@@ -1428,6 +1567,60 @@ function getContextBudgets() {
             totalSafeChars: MAX_LORE_CHARS_DEFAULT + 22000,
         };
     }
+    return {
+        characterChars: Math.max(2500, Math.min(18000, Math.floor(maxContext * 0.32))),
+        totalSafeChars: Math.max(6000, Math.floor(maxContext * 0.8)),
+    };
+}
+
+async function collectWorldLore(characterContextLength = 0) {
+    const ctx = getContext();
+    const runtime = await getWorldInfoRuntime();
+    const loadWorldInfo = typeof ctx.loadWorldInfo === 'function'
+        ? ctx.loadWorldInfo.bind(ctx)
+        : (typeof runtime.loadWorldInfo === 'function' ? runtime.loadWorldInfo : null);
+    const settings = ensureSettings();
+    const budgets = getContextBudgets();
+    const configuredLimit = Math.max(1500, Number(settings.maxLoreChars) || MAX_LORE_CHARS_DEFAULT);
+    const availableForLore = Math.max(1500, budgets.totalSafeChars - characterContextLength - 3500);
+    const limit = Math.min(configuredLimit, availableForLore);
+    const entries = [];
+    const failures = [];
+
+    for (const name of state.selectedWorldNames) {
+        try {
+            const book = loadWorldInfo ? await loadWorldInfo(name) : null;
+            if (book) entries.push(...extractEntries(book, name));
+            else failures.push(name);
+        } catch (error) {
+            console.warn(`[${DISPLAY_NAME}] Failed to load World Info: ${name}`, error);
+            failures.push(name);
+        }
+    }
+
+    if (state.embeddedBook) {
+        entries.push(...extractEntries(state.embeddedBook, '角色卡内嵌 Character Book'));
+    }
+
+    // Constants and high-order rules tend to contain broad setting constraints, so keep them first if a large lorebook must be trimmed.
+    entries.sort((a, b) => Number(b.constant) - Number(a.constant) || b.order - a.order || a.index - b.index);
+
+    let usedChars = 0;
+    let included = 0;
+    const blocks = [];
+    for (const entry of entries) {
+        const text = neutralizePersonaReferences(
+            entryToText(entry),
+            ctx.name1,
+            getCharacterName(getCurrentCharacter(ctx)),
+        );
+        if (usedChars + text.length > limit && blocks.length) continue;
+        blocks.push(text.slice(0, Math.max(0, limit - usedChars)));
+        usedChars += Math.min(text.length, Math.max(0, limit - usedChars));
+        included += 1;
+        if (usedChars >= limit) break;
+    }
+
     return {
         characterChars: Math.max(2500, Math.min(18000, Math.floor(maxContext * 0.32))),
         totalSafeChars: Math.max(6000, Math.floor(maxContext * 0.8)),
@@ -2487,6 +2680,74 @@ function renderCurrentResult(meta = '生成完成，可切换姓名和输出格�
 function setLoading(loading) {
     const root = state.overlay;
     if (!root) return;
+    const toolbar = root.querySelector('#pf-refinement-view-toolbar');
+    const comparison = root.querySelector('#pf-comparison');
+    const result = root.querySelector('#pf-result');
+    const outputToolbar = root.querySelector('#pf-output-toolbar');
+    const empty = root.querySelector('#pf-empty');
+    const canCompare = hasRefinementComparison();
+    if (!canCompare) state.resultView = 'persona';
+    const comparing = canCompare && state.resultView === 'comparison';
+
+    if (toolbar) toolbar.hidden = !canCompare;
+    root.querySelectorAll('[data-result-view]').forEach(button => {
+        const active = button.dataset.resultView === (comparing ? 'comparison' : 'persona');
+        button.classList.toggle('is-active', active);
+        button.setAttribute('aria-selected', String(active));
+    });
+    if (outputToolbar) outputToolbar.hidden = comparing;
+    if (comparison) comparison.hidden = !comparing;
+    if (result) result.hidden = comparing || !result.textContent;
+    if (empty) empty.hidden = comparing || Boolean(result?.textContent);
+    if (comparing) renderRefinementComparison();
+
+    const copy = root.querySelector('#pf-copy');
+    if (copy) copy.title = comparing ? '复制优化后人设，不包含修改对比' : '';
+}
+
+function setResultView(view) {
+    state.resultView = view === 'comparison' && hasRefinementComparison()
+        ? 'comparison'
+        : 'persona';
+    updateResultView();
+}
+
+function renderCandidateButtons() {
+    const root = state.overlay;
+    const panel = root?.querySelector('#pf-candidate-panel');
+    const wrap = root?.querySelector('#pf-name-candidates');
+    if (!panel || !wrap) return;
+    const candidates = state.structuredResult?.candidates || [];
+    panel.hidden = candidates.length === 0 || state.structuredResult?.options?.mode === 'refine';
+    wrap.replaceChildren();
+
+    candidates.forEach((candidate, index) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'pf-name-button';
+        button.classList.toggle('is-active', index === state.selectedCandidateIndex);
+        button.textContent = candidate.name;
+        if (candidate.style) button.title = candidate.style;
+        button.addEventListener('click', () => selectCandidate(index));
+        wrap.appendChild(button);
+    });
+
+    const reroll = root.querySelector('#pf-reroll-names');
+    if (reroll) reroll.hidden = Boolean(state.structuredResult?.options?.fixedName);
+}
+
+function renderCurrentResult(meta = '生成完成，可切换姓名和输出格式') {
+    if (!state.structuredResult) return;
+    const format = ensureSettings().lastOutputFormat || 'natural';
+    const text = renderStructuredResult(state.structuredResult, state.selectedCandidateIndex, format);
+    renderCandidateButtons();
+    setResult(text, meta);
+    updateResultView();
+}
+
+function setLoading(loading) {
+    const root = state.overlay;
+    if (!root) return;
     const generate = root.querySelector('#pf-generate');
     const regenerate = root.querySelector('#pf-regenerate');
     const copy = root.querySelector('#pf-copy');
@@ -2585,7 +2846,36 @@ function setStreamingFallbackPreview(reason = '') {
     if (generate && state.generating) generate.textContent = '已回退普通生成…';
 }
 
-function setResult(text, meta = '生成完成') {
+function formatStreamStatus(info = {}, value = '') {
+    const source = info.source ? ` · ${info.source}` : '';
+    if (info.phase === 'preparing') {
+        return currentMode() === 'refine'
+            ? '正在整理当前 U、角色设定与世界书…'
+            : '正在整理世界书与生成要求…';
+    }
+    if (info.phase === 'connecting') return `正在建立流式连接${source}…`;
+    if (info.phase === 'connected') return `流式连接已建立${source}，等待首个分片…`;
+    if (info.phase === 'receiving') {
+        const count = Number(info.updateCount || info.eventCount) || 0;
+        return `实时接收中 · ${String(value).length} 字 · ${count} 个有效分片${source}`;
+    }
+    return '正在等待模型输出…';
+}
+
+function scrollStreamingResultIntoView() {
+    const root = state.overlay;
+    const scroller = root?.querySelector('.pf-scroll');
+    const card = root?.querySelector('#pf-result-card');
+    if (!scroller || !card) return;
+    const targetTop = Math.max(0, card.offsetTop - scroller.offsetTop - 12);
+    try {
+        scroller.scrollTo({ top: targetTop, behavior: 'smooth' });
+    } catch {
+        scroller.scrollTop = targetTop;
+    }
+}
+
+function setStreamingPreview(text = '', info = {}) {
     const root = state.overlay;
     if (!root) return;
     const result = root.querySelector('#pf-result');
@@ -2599,11 +2889,16 @@ function setResult(text, meta = '生成完成') {
     updateResultView();
 }
 
-function setResultError(message) {
+function setStreamingFallbackPreview(reason = '') {
     const root = state.overlay;
     if (!root) return;
-    const result = root.querySelector('#pf-result');
+    const message = `流式连接未成功，正在切换普通生成${reason ? `：${reason}` : '…'}`;
     const empty = root.querySelector('#pf-empty');
+    const result = root.querySelector('#pf-result');
+    state.resultView = 'persona';
+    root.querySelector('#pf-refinement-view-toolbar').hidden = true;
+    root.querySelector('#pf-comparison').hidden = true;
+    root.querySelector('#pf-output-toolbar').hidden = false;
     result.hidden = true;
     result.textContent = '';
     const candidatePanel = root.querySelector('#pf-candidate-panel');
@@ -2616,6 +2911,7 @@ function setResultError(message) {
     root.querySelector('#pf-result-meta').textContent = generationErrorHint(message);
     root.querySelector('#pf-copy').disabled = true;
     root.querySelector('#pf-regenerate').disabled = false;
+    updateResultView();
 }
 
 function generationErrorHint(message) {
