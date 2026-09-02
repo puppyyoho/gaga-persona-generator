@@ -23,9 +23,13 @@ import {
     buildLegacyChatStreamingPayload,
     buildLegacyTextStreamingPayload,
     detectHostCapabilities,
+    extractGeneratedTextCompat,
+    extractReasoningCompat,
+    getActiveModelInfo,
     generateRawCompat,
     getHostContext,
     initializeHostCompatibility,
+    readSelectedConnectionProfile,
     readOpeningGreetingCompat,
     readPersonaCompat,
     subscribeHostEvents,
@@ -34,7 +38,7 @@ import {
 const EXTENSION_NAME = 'persona-forge';
 const DISPLAY_NAME = '嘎嘎人设生成器';
 const SETTINGS_KEY = 'personaForge';
-const VERSION = '0.7.0';
+const VERSION = '0.7.1';
 const FAB_ICON_URL = new URL('./icon.png', import.meta.url).href;
 const MAX_LORE_CHARS_DEFAULT = 52000;
 
@@ -319,7 +323,7 @@ function createStaticUi() {
                         </div>
                         <div>
                             <span class="pf-label-mini">生成模型</span>
-                            <strong>跟随 SillyTavern 当前连接</strong>
+                            <strong id="pf-generation-model">跟随 SillyTavern 当前连接</strong>
                         </div>
                     </div>
                     <div class="pf-book-summary">
@@ -1295,6 +1299,8 @@ async function refreshContextUi(force = false) {
     state.overlay.querySelector('#pf-context-line').textContent = character
         ? `已读取当前角色 · ${state.activeWorldNames.length} 个绑定/启用世界书${state.embeddedBook ? ' · 含卡内世界书' : ''}`
         : '当前未选择单角色；仍可使用全局与聊天世界书生成。';
+    const modelLabel = state.overlay.querySelector('#pf-generation-model');
+    if (modelLabel) modelLabel.textContent = getActiveModelInfo(ctx).label;
 
     updateGreetingReferenceUi(character);
 
@@ -1652,15 +1658,15 @@ function collectGenerationOptions() {
 
 function getConnectionManagerStreaming(ctx) {
     const service = ctx?.ConnectionManagerRequestService;
-    const extensionSettings = ctx?.extensionSettings;
-    const connectionManager = extensionSettings?.connectionManager;
-    const disabled = Array.isArray(extensionSettings?.disabledExtensions)
-        && extensionSettings.disabledExtensions.includes('connection-manager');
-    const profileId = connectionManager?.selectedProfile;
-    const profiles = Array.isArray(connectionManager?.profiles) ? connectionManager.profiles : [];
-    if (disabled || typeof service?.sendRequest !== 'function' || !profileId) return null;
-    const profile = profiles.find(item => item?.id === profileId);
-    if (!profile) return null;
+    const profile = readSelectedConnectionProfile(ctx);
+    if (!profile || typeof service?.sendRequest !== 'function') return null;
+    const modelInfo = getActiveModelInfo(ctx);
+    // A manually changed model in the live selector is newer than the profile
+    // snapshot. In that case let SillyTavern's main API path handle the request
+    // instead of silently reverting to the profile's old model.
+    if (modelInfo.liveModel && modelInfo.profileModel && modelInfo.liveModel !== modelInfo.profileModel) {
+        return null;
+    }
     try {
         if (typeof service.isProfileSupported === 'function' && !service.isProfileSupported(profile)) return null;
     } catch (error) {
@@ -1669,39 +1675,44 @@ function getConnectionManagerStreaming(ctx) {
     }
     return {
         service,
-        profileId,
-        label: profile.name || profile.model || '连接管理器',
+        profileId: profile.id,
+        profile,
+        label: [profile.name || '连接管理器', profile.model].filter(Boolean).join(' · '),
     };
 }
 
 function getCurrentApiStreaming(ctx) {
-    const mainApi = String(ctx?.mainApi || '').toLowerCase();
-    const chatService = ctx?.ChatCompletionService;
+    const liveContext = getContext();
+    const sourceContext = liveContext || ctx;
+    const mainApi = String(sourceContext?.mainApi || '').toLowerCase();
+    const chatService = sourceContext?.ChatCompletionService;
     if (mainApi === 'openai'
         && typeof chatService?.presetToGeneratePayload === 'function'
         && typeof chatService?.sendRequest === 'function'
-        && ctx?.chatCompletionSettings) {
+        && sourceContext?.chatCompletionSettings) {
+        const settings = sourceContext.chatCompletionSettings;
         return {
             api: 'chat',
             service: chatService,
-            settings: ctx.chatCompletionSettings,
+            settings,
             label: [
-                ctx.chatCompletionSettings.chat_completion_source || 'Chat Completion',
-                ctx.getChatCompletionModel?.(ctx.chatCompletionSettings),
+                settings.chat_completion_source || 'Chat Completion',
+                sourceContext.getChatCompletionModel?.(settings),
             ].filter(Boolean).join(' · '),
         };
     }
 
-    const textService = ctx?.TextCompletionService;
+    const textService = sourceContext?.TextCompletionService;
     if (mainApi === 'textgenerationwebui'
         && typeof textService?.presetToGeneratePayload === 'function'
         && typeof textService?.sendRequest === 'function'
-        && ctx?.textCompletionSettings) {
+        && sourceContext?.textCompletionSettings) {
+        const settings = sourceContext.textCompletionSettings;
         return {
             api: 'text',
             service: textService,
-            settings: ctx.textCompletionSettings,
-            label: '当前 Text Completion',
+            settings,
+            label: [settings.api_type || settings.type || 'Text Completion', settings.model].filter(Boolean).join(' · '),
         };
     }
 
@@ -1749,8 +1760,8 @@ async function buildCoreChatStreamingPayload(ctx, currentApi, messages) {
         // SillyTavern 1.14-1.17 exposes the streaming request service but not
         // createGenerationParameters(). Recreate the public request shape from
         // active settings without mutating the user's preset.
-        const model = runtime.getChatCompletionModel?.(settings.chat_completion_source)
-            ?? ctx.getChatCompletionModel?.(settings.chat_completion_source)
+        const model = runtime.getChatCompletionModel?.(settings)
+            ?? ctx.getChatCompletionModel?.(settings)
             ?? settings.model;
         payload = buildLegacyChatStreamingPayload(settings, messages, model, currentApi.service);
     }
@@ -1795,15 +1806,91 @@ function waitForBrowserPaint() {
 
 function readableError(error) {
     const cause = error?.cause;
-    return String(cause?.message || error?.message || error || '未知错误');
+    const direct = cause?.message || error?.message;
+    if (direct) return String(direct);
+    if (error && typeof error === 'object') {
+        const nested = error.error?.message
+            || error.error
+            || error.detail?.error?.message
+            || error.detail
+            || error.response;
+        if (nested) return typeof nested === 'string' ? nested : JSON.stringify(nested);
+    }
+    return String(error || '未知错误');
+}
+
+function getResponseTokenBudget(ctx, targetLength) {
+    // targetLength is a Chinese-character writing target, while the API limit is
+    // measured in tokens. Reserve room for JSON keys, structural punctuation and
+    // reasoning so the model is not forced to spend the entire response on setup.
+    const chars = Math.max(300, Number(targetLength) || 1000);
+    const estimated = Math.ceil(chars * 1.6 + 800);
+    const configured = Number(
+        ctx?.chatCompletionSettings?.openai_max_tokens
+        ?? ctx?.textCompletionSettings?.max_tokens
+        ?? ctx?.textCompletionSettings?.max_new_tokens
+        ?? 0,
+    );
+    const upperBound = Math.max(estimated, Number.isFinite(configured) ? configured : 0);
+    return Math.min(8192, Math.max(1024, upperBound));
+}
+
+async function generateWithCurrentConnection(ctx, { systemPrompt, prompt, maxTokens }) {
+    const liveContext = getContext();
+    const connection = getConnectionManagerStreaming(liveContext);
+    const responseLength = getResponseTokenBudget(liveContext, maxTokens);
+
+    if (connection) {
+        const messages = [
+            ...(systemPrompt ? [{ role: 'system', content: systemPrompt }] : []),
+            { role: 'user', content: prompt },
+        ];
+        const response = await connection.service.sendRequest(
+            connection.profileId,
+            messages,
+            responseLength,
+            {
+                stream: false,
+                extractData: true,
+                includePreset: true,
+                includeInstruct: true,
+            },
+        );
+        let text = extractGeneratedTextCompat(liveContext, response);
+        if (!text && typeof response === 'function') {
+            const generator = response();
+            for await (const chunk of generator) {
+                text = typeof chunk === 'string' ? chunk : (chunk?.text ?? chunk?.content ?? text);
+            }
+        }
+        if (!String(text).trim()) {
+            const reasoning = extractReasoningCompat(response);
+            throw new Error(reasoning.trim()
+                ? `${connection.label} · 模型只返回了思考内容，没有最终人设正文。请降低思考强度或提高回复上限后重试。`
+                : `${connection.label} · 模型返回了空内容。请检查回复上限与内容过滤设置后重试。`);
+        }
+        return { text: String(text), source: connection.label };
+    }
+
+    const text = await generateRawCompat(liveContext, {
+        systemPrompt,
+        prompt,
+        responseLength,
+        trimNames: false,
+    });
+    return {
+        text: String(text),
+        source: getActiveModelInfo(liveContext).label,
+    };
 }
 
 async function generateRawWithStreaming(ctx, { systemPrompt, prompt, maxTokens, onStatus, onChunk }) {
-    // The selected Connection Manager profile is not necessarily the connection
-    // currently used by SillyTavern. Prefer the live main API and use a profile
-    // only when that API has no extension-safe streaming service.
-    const currentApi = getCurrentApiStreaming(ctx);
-    const connection = currentApi ? null : getConnectionManagerStreaming(ctx);
+    // Re-read the host context immediately before generation. A Connection Manager
+    // profile is the active connection selected by the user and must take priority
+    // over the API settings captured when the panel was opened.
+    const liveContext = getContext();
+    const connection = getConnectionManagerStreaming(liveContext);
+    const currentApi = connection ? null : getCurrentApiStreaming(liveContext);
     if (!connection && !currentApi) return { supported: false, streamed: false, text: '' };
 
     const controller = new AbortController();
@@ -1815,7 +1902,7 @@ async function generateRawWithStreaming(ctx, { systemPrompt, prompt, maxTokens, 
         // Target Chinese character count is a writing instruction, not an API token limit.
         // Current Chat/Text requests keep SillyTavern's validated response length; only the
         // Connection Manager path still requires an explicit value from its public API.
-        const connectionMaxTokens = Math.max(256, Math.floor(Number(maxTokens) || 1000));
+        const connectionMaxTokens = getResponseTokenBudget(liveContext, maxTokens);
         let response;
 
         if (connection) {
@@ -1840,10 +1927,10 @@ async function generateRawWithStreaming(ctx, { systemPrompt, prompt, maxTokens, 
                 ...(systemPrompt ? [{ role: 'system', content: systemPrompt }] : []),
                 { role: 'user', content: prompt },
             ];
-            const payload = await buildCoreChatStreamingPayload(ctx, currentApi, messages);
+            const payload = await buildCoreChatStreamingPayload(liveContext, currentApi, messages);
             response = await currentApi.service.sendRequest(payload, true, controller.signal);
         } else {
-            const activePreset = getActiveTextCompletionPreset(ctx, currentApi.settings);
+            const activePreset = getActiveTextCompletionPreset(liveContext, currentApi.settings);
             const settings = cloneSettings(activePreset || currentApi.settings);
             const finalPrompt = [systemPrompt, prompt].filter(Boolean).join('\n\n');
             const overridePayload = {
@@ -1880,11 +1967,11 @@ async function generateRawWithStreaming(ctx, { systemPrompt, prompt, maxTokens, 
                     presetPayload,
                     overridePayload,
                     currentApi.service,
-                    ctx.getTextGenServer?.(settings.api_type ?? settings.type),
+                    liveContext.getTextGenServer?.(settings.api_type ?? settings.type),
                 );
-            const readyEvent = ctx.eventTypes?.TEXT_COMPLETION_SETTINGS_READY;
-            if (readyEvent && typeof ctx.eventSource?.emit === 'function') {
-                await ctx.eventSource.emit(readyEvent, payload);
+            const readyEvent = liveContext.eventTypes?.TEXT_COMPLETION_SETTINGS_READY;
+            if (readyEvent && typeof liveContext.eventSource?.emit === 'function') {
+                await liveContext.eventSource.emit(readyEvent, payload);
             }
             response = await currentApi.service.sendRequest(payload, true, controller.signal);
         }
@@ -2025,7 +2112,13 @@ async function generatePersona() {
         if (streamState.text) {
             resultText = streamState.text;
         } else {
-            resultText = await generateRawCompat(ctx, { systemPrompt, prompt });
+            const fallback = await generateWithCurrentConnection(ctx, {
+                systemPrompt,
+                prompt,
+                maxTokens: options.targetLength,
+            });
+            resultText = fallback.text;
+            if (fallback.source) streamState.source = fallback.source;
         }
 
         if (generationId !== state.generationEpoch) return;
@@ -2095,12 +2188,13 @@ async function rerollNames() {
     setLoading(true);
 
     try {
-        const result = await generateRawCompat(ctx, {
+        const result = await generateWithCurrentConnection(ctx, {
             systemPrompt: buildPersonaSystemPrompt(),
             prompt: buildNameRerollPrompt(state.structuredResult, count),
+            maxTokens: 900,
         });
         if (generationId !== state.generationEpoch) return;
-        const payload = parseStructuredResponse(result);
+        const payload = parseStructuredResponse(result.text);
         const candidates = normalizeNameCandidates(payload, ctx.name1);
         if (!candidates.length) throw new Error('模型没有返回新的候选姓名。');
 
@@ -2519,9 +2613,29 @@ function setResultError(message) {
     root.querySelector('#pf-output-toolbar').hidden = false;
     empty.hidden = false;
     empty.textContent = `生成失败：${message}`;
-    root.querySelector('#pf-result-meta').textContent = '请检查当前 API 连接后重试。';
+    root.querySelector('#pf-result-meta').textContent = generationErrorHint(message);
     root.querySelector('#pf-copy').disabled = true;
     root.querySelector('#pf-regenerate').disabled = false;
+}
+
+function generationErrorHint(message) {
+    const text = String(message || '');
+    if (/思考内容|reasoning|thinking/i.test(text)) {
+        return '模型只返回了思考，没有返回最终正文。可降低思考强度、关闭思考显示或提高回复上限。';
+    }
+    if (/空内容|No message generated|empty/i.test(text)) {
+        return '模型没有返回可用正文。请检查回复上限、内容过滤和当前模型设置。';
+    }
+    if (/moderation|safety|blocked|filtered|内容过滤|安全/i.test(text)) {
+        return '模型或上游接口拦截了这次内容。可更换模型，或减少过于敏感的输入后重试。';
+    }
+    if (/422|400|参数|payload|request/i.test(text)) {
+        return '当前模型拒绝了请求参数。请确认连接配置、模型名称和回复上限。';
+    }
+    if (/网络|连接|fetch|timeout|超时|status 5/i.test(text)) {
+        return '请求没有正常到达模型服务，请检查酒馆连接状态和反向代理。';
+    }
+    return '请检查当前模型连接与返回内容后重试。';
 }
 
 async function copyText(text) {
@@ -2580,6 +2694,10 @@ function bindContextEvents() {
         'WORLDINFO_SETTINGS_UPDATED',
         'PERSONA_CHANGED',
         'MESSAGE_SWIPED',
+        'CONNECTION_PROFILE_LOADED',
+        'CONNECTION_PROFILE_UPDATED',
+        'API_CHANGED',
+        'CHAT_COMPLETION_SETTINGS_UPDATED',
     ];
 
     subscribeHostEvents(ctx, candidates, refresh);
