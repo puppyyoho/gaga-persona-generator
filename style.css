@@ -1025,7 +1025,6 @@ html.pf-modal-open body {
     border: 0;
     padding: 0;
     background: transparent;
-    filter: drop-shadow(0 5px 12px rgba(0, 0, 0, .22));
     pointer-events: none;
     user-select: none;
 }
