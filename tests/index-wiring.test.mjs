@@ -3,6 +3,7 @@ import fs from 'node:fs';
 
 const indexSource = fs.readFileSync(new URL('../index.js', import.meta.url), 'utf8');
 const compatSource = fs.readFileSync(new URL('../st-compat.js', import.meta.url), 'utf8');
+const styleSource = fs.readFileSync(new URL('../style.css', import.meta.url), 'utf8');
 const manifest = JSON.parse(fs.readFileSync(new URL('../manifest.json', import.meta.url), 'utf8'));
 
 const ids = [...indexSource.matchAll(/\bid="([^"]+)"/g)].map(match => match[1]);
@@ -43,6 +44,13 @@ assert.match(indexSource, /saveCustomSectionPreset/);
 assert.match(indexSource, /applyCustomSectionPreset/);
 assert.match(indexSource, /deleteCustomSectionPreset/);
 assert.match(indexSource, /pf-custom-preset-name/);
+assert.match(indexSource, /pf-fab-size/);
+assert.match(indexSource, /pf-reset-fab-size/);
+assert.match(indexSource, /pf-upload-icon/);
+assert.match(indexSource, /pf-reset-icon/);
+assert.match(indexSource, /floatingSize/);
+assert.match(indexSource, /floatingIcon/);
+assert.match(styleSource, /--pf-fab-size/);
 assert.match(indexSource, /pf-custom-preset-select/);
 assert.match(indexSource, /Object\.assign\(current, migrated\)/);
 assert.match(indexSource, /const sectionIds = getSelectedSections\(getCurrentSectionSelection\(\)\)/);
