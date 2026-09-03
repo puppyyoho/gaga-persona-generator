@@ -373,9 +373,10 @@ function syncApiConnectionUi() {
     }
     const status = root.querySelector('#pf-independent-api-status');
     if (status && !status.dataset.state) {
+        const activeModel = resolveIndependentApiModel(getContext(), api);
         status.textContent = api.secretId
-            ? `已保存 API Key（酒馆密钥库） · ${api.model || '未填写模型'}`
-            : '尚未保存 API Key。填写后点击“保存独立 API”。';
+            ? `已保存 API Key（酒馆密钥库） · 模型：${activeModel || '将跟随酒馆当前模型'}`
+            : '尚未保存 API Key。填写后点击“保存独立 API”。模型名称留空会自动跟随酒馆当前模型。';
     }
 }
 
@@ -390,8 +391,8 @@ function setApiMode(mode) {
 async function saveIndependentApi() {
     const settings = ensureSettings();
     const config = independentApiConfigFromUi({ persist: false });
-    if (!config.endpoint || !config.model) {
-        throw new Error('请先填写 API 地址和模型名称。');
+    if (!config.endpoint) {
+        throw new Error('请先填写 API 地址。模型名称可以留空，默认自动跟随酒馆当前模型。');
     }
     const keyInput = state.overlay?.querySelector('#pf-independent-api-key');
     const key = String(keyInput?.value || '').trim();
@@ -416,7 +417,8 @@ async function saveIndependentApi() {
     settings.independentApi = normalizeIndependentApiSettings(config);
     saveSettings();
     syncApiConnectionUi();
-    setIndependentApiStatus(`已保存独立 API：${config.model} · API Key 保存在酒馆密钥库`, 'success');
+    const activeModel = resolveIndependentApiModel(getContext(), config);
+    setIndependentApiStatus(`已保存独立 API：${activeModel || '模型将跟随酒馆当前连接'} · API Key 保存在酒馆密钥库`, 'success');
     notify('success', '独立 API 设置已保存。');
 }
 
@@ -443,15 +445,17 @@ async function clearIndependentApiKey() {
 async function testIndependentApi() {
     const settings = ensureSettings();
     const config = independentApiConfigFromUi({ persist: false });
-    if (!config.endpoint || !config.model || !config.secretId) {
-        throw new Error('请先填写地址、模型，并保存 API Key。');
+    if (!config.endpoint || !config.secretId) {
+        throw new Error('请先填写地址并保存 API Key。模型名称可以留空，默认自动跟随酒馆当前模型。');
     }
     const service = getContext()?.ChatCompletionService;
     if (typeof service?.sendRequest !== 'function') {
         throw new Error('当前酒馆版本没有 Chat Completion 请求接口，无法使用独立 API。');
     }
+    const activeModel = resolveIndependentApiModel(getContext(), config);
+    if (!activeModel) throw new Error('无法读取酒馆当前模型，请填写独立 API 的模型名称。');
     setIndependentApiStatus('正在测试连接…');
-    const payload = buildIndependentApiPayload(config, [
+    const payload = buildIndependentApiPayload({ ...config, model: activeModel }, [
         { role: 'user', content: '请只回复 OK' },
     ], { stream: false });
     payload.max_tokens = 8;
@@ -459,8 +463,15 @@ async function testIndependentApi() {
     const text = extractGeneratedTextCompat(getContext(), response)
         || (typeof response === 'string' ? response : response?.content ?? response?.text ?? '');
     if (!String(text).trim()) throw new Error('API 已响应，但没有返回可读内容。');
-    setIndependentApiStatus(`连接成功：${config.model} · 已收到测试响应`, 'success');
-    notify('success', `独立 API 连接成功：${config.model}`);
+    setIndependentApiStatus(`连接成功：${activeModel || '当前模型'} · 已收到测试响应`, 'success');
+    notify('success', `独立 API 连接成功：${activeModel || '当前模型'}`);
+}
+
+function resolveIndependentApiModel(ctx = getContext(), config = ensureSettings().independentApi) {
+    const configured = normalizeIndependentApiSettings(config).model;
+    if (configured) return configured;
+    const active = getActiveModelInfo(ctx);
+    return active.liveModel || active.profileModel || active.model || '';
 }
 
 function updateGenerationModelLabel(ctx = getContext()) {
@@ -469,7 +480,7 @@ function updateGenerationModelLabel(ctx = getContext()) {
     const settings = ensureSettings();
     if (settings.apiMode === 'independent') {
         const api = normalizeIndependentApiSettings(settings.independentApi);
-        modelLabel.textContent = `独立 API · ${api.model || '未配置模型'}`;
+        modelLabel.textContent = `独立 API · ${resolveIndependentApiModel(ctx, api) || '跟随酒馆当前模型'}`;
         return;
     }
     modelLabel.textContent = getActiveModelInfo(ctx).label;
@@ -543,8 +554,8 @@ function createStaticUi() {
                                 <input id="pf-independent-api-endpoint" type="url" autocomplete="url" placeholder="https://example.com/v1">
                             </label>
                             <label class="pf-field">
-                                <span>模型名称</span>
-                                <input id="pf-independent-api-model" type="text" autocomplete="off" placeholder="例如：claude-3-5-sonnet 或 gpt-4o">
+                                <span>模型名称 <small>可选，留空自动跟随酒馆</small></span>
+                                <input id="pf-independent-api-model" type="text" autocomplete="off" placeholder="留空则使用酒馆当前模型；也可手动覆盖">
                             </label>
                             <label class="pf-field">
                                 <span>最大输出 Token <small>留空则交给 API 默认值</small></span>
@@ -2070,11 +2081,12 @@ function getIndependentApiStreaming(ctx) {
     const service = ctx?.ChatCompletionService;
     if (typeof service?.sendRequest !== 'function') return null;
     const settings = normalizeIndependentApiSettings(ensureSettings().independentApi);
+    const model = resolveIndependentApiModel(ctx, settings);
     return {
         api: 'independent-chat',
         service,
-        settings,
-        label: ['独立 API', settings.model || '未配置模型'].join(' · '),
+        settings: { ...settings, model },
+        label: ['独立 API', model || '跟随酒馆当前模型'].join(' · '),
     };
 }
 
@@ -2225,8 +2237,10 @@ async function generateWithCurrentConnection(ctx, { systemPrompt, prompt, maxTok
     if (ensureSettings().apiMode === 'independent') {
         const config = independentApiConfigFromUi({ persist: true });
         if (!hasIndependentApiSettings(config)) {
-            throw new Error('独立 API 尚未配置完整，请填写地址、模型并保存 API Key。');
+            throw new Error('独立 API 尚未配置完整，请填写地址并保存 API Key。模型名称可以留空，默认自动跟随酒馆当前模型。');
         }
+        const model = resolveIndependentApiModel(liveContext, config);
+        if (!model) throw new Error('无法读取酒馆当前模型，请填写独立 API 的模型名称。');
         const service = liveContext?.ChatCompletionService;
         if (typeof service?.sendRequest !== 'function') {
             throw new Error('当前酒馆版本没有 Chat Completion 请求接口，无法使用独立 API。');
@@ -2235,17 +2249,17 @@ async function generateWithCurrentConnection(ctx, { systemPrompt, prompt, maxTok
             ...(systemPrompt ? [{ role: 'system', content: systemPrompt }] : []),
             { role: 'user', content: prompt },
         ];
-        const payload = buildIndependentApiPayload(config, messages, { stream: false });
+        const payload = buildIndependentApiPayload({ ...config, model }, messages, { stream: false });
         const response = await service.sendRequest(payload, true);
         let text = extractGeneratedTextCompat(liveContext, response);
         if (!text) text = typeof response === 'string' ? response : (response?.content ?? response?.text ?? '');
         if (!String(text).trim()) {
             const reasoning = extractReasoningCompat(response);
             throw new Error(reasoning.trim()
-                ? `${config.model} · 模型只返回了思考内容，没有最终人设正文。请降低思考强度或填写最大输出 Token 后重试。`
-                : `${config.model} · 模型返回了空内容，请检查独立 API 设置与内容过滤。`);
+                ? `${model} · 模型只返回了思考内容，没有最终人设正文。请降低思考强度或填写最大输出 Token 后重试。`
+                : `${model} · 模型返回了空内容，请检查独立 API 设置与内容过滤。`);
         }
-        return { text: String(text), source: `独立 API · ${config.model}` };
+        return { text: String(text), source: `独立 API · ${model}` };
     }
     const responseLength = getResponseTokenBudget(liveContext, maxTokens);
     const hasNativeGeneration = typeof liveContext?.generateRawData === 'function'
@@ -2333,13 +2347,15 @@ async function generateRawWithStreaming(ctx, { systemPrompt, prompt, maxTokens, 
         if (currentApi?.api === 'independent-chat') {
             const config = independentApiConfigFromUi({ persist: true });
             if (!hasIndependentApiSettings(config)) {
-                throw new Error('独立 API 尚未配置完整，请填写地址、模型并保存 API Key。');
+                throw new Error('独立 API 尚未配置完整，请填写地址并保存 API Key。模型名称可以留空，默认自动跟随酒馆当前模型。');
             }
+            const model = resolveIndependentApiModel(liveContext, config);
+            if (!model) throw new Error('无法读取酒馆当前模型，请填写独立 API 的模型名称。');
             const messages = [
                 ...(systemPrompt ? [{ role: 'system', content: systemPrompt }] : []),
                 { role: 'user', content: prompt },
             ];
-            const payload = buildIndependentApiPayload(config, messages, { stream: true });
+            const payload = buildIndependentApiPayload({ ...config, model }, messages, { stream: true });
             response = await currentApi.service.sendRequest(payload, true, controller.signal);
         } else if (connection) {
             const messages = [

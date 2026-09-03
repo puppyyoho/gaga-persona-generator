@@ -49,3 +49,13 @@ test('builds SillyTavern custom Chat Completion payloads', () => {
     assert.equal(payload.max_tokens, 1200);
     assert.equal('api_key' in payload, false);
 });
+
+test('allows the model to be resolved from the active Tavern connection', () => {
+    const settings = normalizeIndependentApiSettings({
+        endpoint: 'https://example.test/v1',
+        secretId: 'secret-1',
+    });
+    assert.equal(hasIndependentApiSettings(settings), true);
+    const payload = buildIndependentApiPayload(settings, [], { stream: false });
+    assert.equal('model' in payload, false);
+});
