@@ -40,7 +40,7 @@ import {
 const EXTENSION_NAME = 'persona-forge';
 const DISPLAY_NAME = '嘎嘎人设生成器';
 const SETTINGS_KEY = 'personaForge';
-const VERSION = '0.7.10';
+const VERSION = '0.7.11';
 const FAB_ICON_URL = new URL('./icon.png', import.meta.url).href;
 const DEFAULT_FAB_SIZE = 65;
 
@@ -1736,7 +1736,7 @@ function getConnectionManagerStreaming(ctx) {
     // A manually changed model in the live selector is newer than the profile
     // snapshot. In that case let SillyTavern's main API path handle the request
     // instead of silently reverting to the profile's old model.
-    if (modelInfo.liveModel && modelInfo.profileModel && modelInfo.liveModel !== modelInfo.profileModel) {
+    if (modelInfo.liveModel && modelInfo.liveModel !== modelInfo.profileModel) {
         return null;
     }
     try {
@@ -1749,6 +1749,7 @@ function getConnectionManagerStreaming(ctx) {
         service,
         profileId: profile.id,
         profile,
+        model: modelInfo.liveModel || modelInfo.profileModel,
         label: [profile.name || '连接管理器', profile.model].filter(Boolean).join(' · '),
     };
 }
@@ -1925,8 +1926,28 @@ function getResponseTokenBudget(ctx, targetLength) {
 
 async function generateWithCurrentConnection(ctx, { systemPrompt, prompt, maxTokens }) {
     const liveContext = getContext();
-    const connection = getConnectionManagerStreaming(liveContext);
     const responseLength = getResponseTokenBudget(liveContext, maxTokens);
+    const hasNativeGeneration = typeof liveContext?.generateRawData === 'function'
+        || typeof liveContext?.generateRaw === 'function'
+        || typeof liveContext?.generateQuietPrompt === 'function';
+
+    // Normal generation should follow SillyTavern's currently active API. A
+    // selected Connection Manager profile may only be a saved profile and can
+    // contain a stale/empty model even after the user switches the live model.
+    if (hasNativeGeneration) {
+        const text = await generateRawCompat(liveContext, {
+            systemPrompt,
+            prompt,
+            responseLength,
+            trimNames: false,
+        });
+        return {
+            text: String(text),
+            source: getActiveModelInfo(liveContext).label,
+        };
+    }
+
+    const connection = getConnectionManagerStreaming(liveContext);
 
     if (connection) {
         const messages = [
@@ -1943,6 +1964,7 @@ async function generateWithCurrentConnection(ctx, { systemPrompt, prompt, maxTok
                 includePreset: true,
                 includeInstruct: true,
             },
+            connection.model ? { model: connection.model } : {},
         );
         let text = extractGeneratedTextCompat(liveContext, response);
         if (!text && typeof response === 'function') {
@@ -1960,25 +1982,16 @@ async function generateWithCurrentConnection(ctx, { systemPrompt, prompt, maxTok
         return { text: String(text), source: connection.label };
     }
 
-    const text = await generateRawCompat(liveContext, {
-        systemPrompt,
-        prompt,
-        responseLength,
-        trimNames: false,
-    });
-    return {
-        text: String(text),
-        source: getActiveModelInfo(liveContext).label,
-    };
+    throw new Error('当前版本未提供可用的人设生成接口');
 }
 
 async function generateRawWithStreaming(ctx, { systemPrompt, prompt, maxTokens, onStatus, onChunk }) {
-    // Re-read the host context immediately before generation. A Connection Manager
-    // profile is the active connection selected by the user and must take priority
-    // over the API settings captured when the panel was opened.
+    // Re-read the host context immediately before generation and prefer the API
+    // SillyTavern is actually using. Connection Manager is only a compatibility
+    // fallback when the host does not expose its current Chat/Text stream service.
     const liveContext = getContext();
-    const connection = getConnectionManagerStreaming(liveContext);
-    const currentApi = connection ? null : getCurrentApiStreaming(liveContext);
+    const currentApi = getCurrentApiStreaming(liveContext);
+    const connection = currentApi ? null : getConnectionManagerStreaming(liveContext);
     if (!connection && !currentApi) return { supported: false, streamed: false, text: '' };
 
     const controller = new AbortController();
@@ -2009,6 +2022,7 @@ async function generateRawWithStreaming(ctx, { systemPrompt, prompt, maxTokens, 
                     includePreset: true,
                     includeInstruct: true,
                 },
+                connection.model ? { model: connection.model } : {},
             );
         } else if (currentApi.api === 'chat') {
             const messages = [
