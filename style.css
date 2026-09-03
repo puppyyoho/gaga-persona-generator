@@ -1009,8 +1009,12 @@ html.pf-modal-open body {
     right: max(10px, env(safe-area-inset-right));
     bottom: calc(max(12px, env(safe-area-inset-bottom)) + 78px);
     z-index: 9990;
+    width: 65px;
+    height: 65px;
     width: var(--pf-fab-size, 65px);
     height: var(--pf-fab-size, 65px);
+    min-width: 40px;
+    min-height: 40px;
     padding: 0;
     display: flex;
     align-items: center;
@@ -1334,6 +1338,8 @@ html.pf-modal-open body {
     /* Keep the floating entry reachable on mobile without taking over the screen. */
     .pf-fab {
         position: fixed !important;
+        width: 65px;
+        height: 65px;
         width: var(--pf-fab-size, 65px);
         height: var(--pf-fab-size, 65px);
         max-width: calc(100vw - 20px);
