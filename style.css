@@ -1162,6 +1162,17 @@ html.pf-modal-open body {
     margin-top: 10px;
 }
 
+.pf-api-model-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px;
+    align-items: stretch;
+}
+
+.pf-api-model-row .pf-mini-button {
+    white-space: nowrap;
+}
+
 .pf-api-actions + .pf-inline-note {
     margin-top: 10px;
 }

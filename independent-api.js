@@ -6,6 +6,7 @@ export const DEFAULT_INDEPENDENT_API_SETTINGS = Object.freeze({
     endpoint: DEFAULT_ENDPOINT,
     model: '',
     secretId: '',
+    modelOptions: [],
     maxTokens: '',
     temperature: 0.8,
 });
@@ -19,6 +20,7 @@ export function normalizeIndependentApiUrl(value) {
     if (!url) return '';
     url = url.replace(/\/+$/, '');
     url = url.replace(/\/chat\/completions$/i, '');
+    url = url.replace(/\/models$/i, '');
     return url.replace(/\/+$/, '');
 }
 
@@ -26,10 +28,14 @@ export function normalizeIndependentApiSettings(value) {
     const input = value && typeof value === 'object' ? value : {};
     const maxTokens = Number(input.maxTokens);
     const temperature = Number(input.temperature);
+    const modelOptions = Array.isArray(input.modelOptions)
+        ? input.modelOptions.map(item => String(item ?? '').trim()).filter(Boolean).slice(0, 500)
+        : [];
     return {
         endpoint: normalizeIndependentApiUrl(input.endpoint),
         model: String(input.model ?? '').trim(),
         secretId: String(input.secretId ?? '').trim(),
+        modelOptions: [...new Set(modelOptions)],
         maxTokens: Number.isFinite(maxTokens) && maxTokens > 0 ? Math.floor(maxTokens) : '',
         temperature: Number.isFinite(temperature)
             ? Math.min(2, Math.max(0, temperature))
@@ -57,4 +63,22 @@ export function buildIndependentApiPayload(config, messages, { stream = false } 
     if (settings.model) payload.model = settings.model;
     if (settings.maxTokens) payload.max_tokens = settings.maxTokens;
     return payload;
+}
+
+export function parseIndependentApiModels(data) {
+    const raw = Array.isArray(data)
+        ? data
+        : data?.data ?? data?.models ?? data?.result?.data ?? data?.result?.models ?? [];
+    if (!Array.isArray(raw)) return [];
+    const models = raw.map(item => {
+        if (typeof item === 'string') return item;
+        if (!item || typeof item !== 'object') return '';
+        return item.id ?? item.model ?? item.name ?? item.value ?? '';
+    }).map(item => String(item ?? '').trim()).filter(Boolean);
+    return [...new Set(models)].slice(0, 500);
+}
+
+export function buildIndependentApiModelsUrl(endpoint) {
+    const base = normalizeIndependentApiUrl(endpoint);
+    return base ? `${base}/models` : '';
 }

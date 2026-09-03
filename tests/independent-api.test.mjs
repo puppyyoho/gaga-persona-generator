@@ -6,6 +6,8 @@ import {
     hasIndependentApiSettings,
     normalizeIndependentApiSettings,
     normalizeIndependentApiUrl,
+    parseIndependentApiModels,
+    buildIndependentApiModelsUrl,
 } from '../independent-api.js';
 
 test('normalizes the custom endpoint to a provider base URL', () => {
@@ -27,6 +29,7 @@ test('normalizes independent API settings without retaining a raw key', () => {
         endpoint: 'https://example.test/v1',
         model: 'model-a',
         secretId: 'secret-1',
+        modelOptions: [],
         maxTokens: 1800,
         temperature: 2,
     });
@@ -50,7 +53,7 @@ test('builds SillyTavern custom Chat Completion payloads', () => {
     assert.equal('api_key' in payload, false);
 });
 
-test('allows the model to be resolved from the active Tavern connection', () => {
+test('allows the model to be selected after fetching the independent list', () => {
     const settings = normalizeIndependentApiSettings({
         endpoint: 'https://example.test/v1',
         secretId: 'secret-1',
@@ -58,4 +61,14 @@ test('allows the model to be resolved from the active Tavern connection', () => 
     assert.equal(hasIndependentApiSettings(settings), true);
     const payload = buildIndependentApiPayload(settings, [], { stream: false });
     assert.equal('model' in payload, false);
+});
+
+test('parses standard and provider-specific model list shapes', () => {
+    assert.deepEqual(parseIndependentApiModels({
+        data: [{ id: 'gpt-a' }, { id: 'gpt-b' }, { id: 'gpt-a' }],
+    }), ['gpt-a', 'gpt-b']);
+    assert.deepEqual(parseIndependentApiModels({
+        models: [{ name: 'local-a' }, 'local-b'],
+    }), ['local-a', 'local-b']);
+    assert.equal(buildIndependentApiModelsUrl('https://example.test/v1/chat/completions'), 'https://example.test/v1/models');
 });
