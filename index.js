@@ -38,7 +38,7 @@ import {
 const EXTENSION_NAME = 'persona-forge';
 const DISPLAY_NAME = '嘎嘎人设生成器';
 const SETTINGS_KEY = 'personaForge';
-const VERSION = '0.7.4';
+const VERSION = '0.7.5';
 const FAB_ICON_URL = new URL('./icon.png', import.meta.url).href;
 const DEFAULT_FAB_SIZE = 65;
 const MAX_LORE_CHARS_DEFAULT = 52000;
@@ -47,6 +47,7 @@ const state = {
     overlay: null,
     panel: null,
     settingsPanel: null,
+    floatingButton: null,
     worldInfoRuntime: null,
     floatingResizeBound: false,
     allWorldNames: [],
@@ -300,7 +301,12 @@ function escapeAttribute(value) {
 }
 
 function createStaticUi() {
-    if (document.getElementById('pf-overlay')) return;
+    const existing = document.getElementById('pf-overlay');
+    if (existing && existing === state.overlay) return;
+    if (existing) {
+        existing.remove();
+        document.documentElement.classList.remove('pf-modal-open');
+    }
 
     const overlay = document.createElement('div');
     overlay.id = 'pf-overlay';
@@ -560,7 +566,9 @@ function createStaticUi() {
 }
 
 function createSettingsUi() {
-    if (document.getElementById('pf-settings')) return;
+    const existing = document.getElementById('pf-settings');
+    if (existing && existing === state.settingsPanel) return;
+    existing?.remove();
     const container = document.querySelector('#extensions_settings2') || document.querySelector('#extensions_settings');
     if (!container) return;
 
@@ -796,7 +804,15 @@ function updateFloatingButton() {
     // Respect the user's visibility switch on every viewport.
     if (!settings.showFloatingButton) {
         button?.remove();
+        state.floatingButton = null;
         return;
+    }
+
+    // Extension updates can leave the previous module's button in the DOM.
+    // Replace it so this runtime owns the listeners and state references.
+    if (button && button !== state.floatingButton) {
+        button.remove();
+        button = null;
     }
 
     if (!button) {
@@ -808,6 +824,7 @@ function updateFloatingButton() {
         button.setAttribute('aria-label', `打开${DISPLAY_NAME}（可拖动）`);
         button.innerHTML = `<img class="pf-fab-icon" src="${FAB_ICON_URL}" alt="" aria-hidden="true" draggable="false">`;
         document.body.appendChild(button);
+        state.floatingButton = button;
         bindFloatingDrag(button);
     }
     setFloatingSize(button, settings.floatingSize);
@@ -2827,6 +2844,16 @@ function bindContextEvents() {
 
 export async function init() {
     try {
+        // A hot extension update does not always reload the whole Tavern page.
+        // Remove UI owned by an older module instance before creating this one.
+        const staleOverlay = document.getElementById('pf-overlay');
+        const staleSettings = document.getElementById('pf-settings');
+        const staleFloatingButton = document.getElementById('pf-fab');
+        if (staleOverlay && staleOverlay !== state.overlay) staleOverlay.remove();
+        if (staleSettings && staleSettings !== state.settingsPanel) staleSettings.remove();
+        if (staleFloatingButton && staleFloatingButton !== state.floatingButton) staleFloatingButton.remove();
+        document.documentElement.classList.remove('pf-modal-open');
+
         await initializeHostCompatibility();
         state.capabilities = detectHostCapabilities(getContext());
         createStaticUi();
