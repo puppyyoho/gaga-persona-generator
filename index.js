@@ -741,22 +741,20 @@ function bindFloatingDrag(button) {
         setFloatingPosition(button, rect.left, rect.top);
         button.classList.add('is-dragging');
         button.setPointerCapture?.(event.pointerId);
+        event.preventDefault();
     });
 
     button.addEventListener('pointermove', event => {
         if (!drag || event.pointerId !== drag.pointerId) return;
         const deltaX = event.clientX - drag.startX;
         const deltaY = event.clientY - drag.startY;
-        if (Math.hypot(deltaX, deltaY) > 8) drag.moved = true;
-        if (drag.moved) {
-            setFloatingPosition(button, drag.left + deltaX, drag.top + deltaY);
-            event.preventDefault();
-        }
+        if (Math.hypot(deltaX, deltaY) > 4) drag.moved = true;
+        setFloatingPosition(button, drag.left + deltaX, drag.top + deltaY);
+        event.preventDefault();
     });
 
     const finishDrag = event => {
         if (!drag || event.pointerId !== drag.pointerId) return;
-        const wasTap = event.type !== 'pointercancel' && !drag.moved;
         if (button.hasPointerCapture?.(event.pointerId)) button.releasePointerCapture(event.pointerId);
         button.classList.remove('is-dragging');
         if (drag.moved) {
@@ -764,25 +762,10 @@ function bindFloatingDrag(button) {
             setFloatingPosition(button, Number.parseFloat(button.style.left), Number.parseFloat(button.style.top), true);
         }
         drag = null;
-        // Some older Android WebViews do not synthesize a click after pointer
-        // capture. Open on a tap directly, then consume the duplicate click
-        // emitted by browsers that do synthesize one.
-        if (wasTap) {
-            button.dataset.skipClick = 'true';
-            globalThis.setTimeout(() => {
-                button.dataset.skipClick = '';
-            }, 500);
-            void openPanel();
-        }
     };
     button.addEventListener('pointerup', finishDrag);
     button.addEventListener('pointercancel', finishDrag);
     button.addEventListener('click', event => {
-        if (button.dataset.skipClick === 'true') {
-            button.dataset.skipClick = '';
-            event.preventDefault();
-            return;
-        }
         if (button.dataset.dragged === 'true') {
             button.dataset.dragged = '';
             event.preventDefault();
@@ -795,6 +778,9 @@ function bindFloatingDrag(button) {
 function setFloatingSize(button, value) {
     const size = clampFloatingSize(value);
     button.style.setProperty('--pf-fab-size', `${size}px`);
+    // Keep an inline size for older WebViews that ignore CSS custom properties.
+    button.style.width = `${size}px`;
+    button.style.height = `${size}px`;
     return size;
 }
 
