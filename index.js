@@ -38,8 +38,10 @@ import {
 } from './st-compat.js';
 import {
     buildIndependentApiPayload,
+    buildIndependentApiModelsUrl,
     hasIndependentApiSettings,
     normalizeIndependentApiSettings,
+    parseIndependentApiModels,
 } from './independent-api.js';
 
 const EXTENSION_NAME = 'persona-forge';
@@ -324,11 +326,16 @@ function independentApiConfigFromUi({ persist = true } = {}) {
     const settings = ensureSettings();
     const root = state.overlay;
     const current = normalizeIndependentApiSettings(settings.independentApi);
+    const previousEndpoint = current.endpoint;
     if (root) {
         current.endpoint = root.querySelector('#pf-independent-api-endpoint')?.value ?? current.endpoint;
         current.model = root.querySelector('#pf-independent-api-model')?.value ?? current.model;
         current.maxTokens = root.querySelector('#pf-independent-api-max-tokens')?.value ?? current.maxTokens;
         current.temperature = root.querySelector('#pf-independent-api-temperature')?.value ?? current.temperature;
+    }
+    if (normalizeIndependentApiSettings(current).endpoint !== previousEndpoint) {
+        current.model = '';
+        current.modelOptions = [];
     }
     settings.independentApi = normalizeIndependentApiSettings(current);
     if (persist) saveSettings();
@@ -357,6 +364,15 @@ function syncApiConnectionUi() {
     const note = root.querySelector('#pf-tavern-api-note');
     if (note) note.hidden = independent;
     const api = normalizeIndependentApiSettings(settings.independentApi);
+    const modelList = root.querySelector('#pf-independent-api-model-list');
+    if (modelList) {
+        modelList.replaceChildren();
+        for (const model of api.modelOptions) {
+            const option = document.createElement('option');
+            option.value = model;
+            modelList.appendChild(option);
+        }
+    }
     const values = {
         '#pf-independent-api-endpoint': api.endpoint,
         '#pf-independent-api-model': api.model,
@@ -373,10 +389,9 @@ function syncApiConnectionUi() {
     }
     const status = root.querySelector('#pf-independent-api-status');
     if (status && !status.dataset.state) {
-        const activeModel = resolveIndependentApiModel(getContext(), api);
         status.textContent = api.secretId
-            ? `已保存 API Key（酒馆密钥库） · 模型：${activeModel || '将跟随酒馆当前模型'}`
-            : '尚未保存 API Key。填写后点击“保存独立 API”。模型名称留空会自动跟随酒馆当前模型。';
+            ? `已保存 API Key（酒馆密钥库） · ${api.modelOptions.length ? `已缓存 ${api.modelOptions.length} 个模型` : '尚未获取模型列表'}`
+            : '尚未保存 API Key。填写后点击“保存独立 API”，再获取独立 API 的模型列表。';
     }
 }
 
@@ -392,7 +407,7 @@ async function saveIndependentApi() {
     const settings = ensureSettings();
     const config = independentApiConfigFromUi({ persist: false });
     if (!config.endpoint) {
-        throw new Error('请先填写 API 地址。模型名称可以留空，默认自动跟随酒馆当前模型。');
+        throw new Error('请先填写独立 API 地址。模型可在保存 Key 后从接口获取。');
     }
     const keyInput = state.overlay?.querySelector('#pf-independent-api-key');
     const key = String(keyInput?.value || '').trim();
@@ -418,8 +433,65 @@ async function saveIndependentApi() {
     saveSettings();
     syncApiConnectionUi();
     const activeModel = resolveIndependentApiModel(getContext(), config);
-    setIndependentApiStatus(`已保存独立 API：${activeModel || '模型将跟随酒馆当前连接'} · API Key 保存在酒馆密钥库`, 'success');
+    setIndependentApiStatus(`已保存独立 API：${activeModel || '尚未选择模型，请获取模型列表'} · API Key 保存在酒馆密钥库`, 'success');
     notify('success', '独立 API 设置已保存。');
+}
+
+async function loadIndependentApiModels() {
+    const settings = ensureSettings();
+    let config = independentApiConfigFromUi({ persist: false });
+    if (state.overlay?.querySelector('#pf-independent-api-key')?.value?.trim()) {
+        await saveIndependentApi();
+        config = independentApiConfigFromUi({ persist: false });
+    }
+    if (!config.endpoint || !config.secretId) {
+        throw new Error('请先填写 API 地址并保存 API Key。');
+    }
+    const runtime = await getSecretRuntime();
+    if (typeof runtime?.findSecret !== 'function') {
+        throw new Error('当前酒馆版本无法读取已保存的 Key，无法安全获取模型列表。');
+    }
+    const secretKey = runtime.SECRET_KEYS?.CUSTOM || 'api_key_custom';
+    const secret = await runtime.findSecret(secretKey, config.secretId);
+    if (!secret) throw new Error('无法读取独立 API Key，请重新保存一次。');
+    const url = buildIndependentApiModelsUrl(config.endpoint);
+    setIndependentApiStatus('正在从独立 API 获取模型列表…');
+    let response;
+    try {
+        response = await fetch(url, {
+            method: 'GET',
+            headers: {
+                Accept: 'application/json',
+                Authorization: `Bearer ${secret}`,
+            },
+            cache: 'no-store',
+        });
+    } catch (error) {
+        throw new Error('模型列表请求被浏览器拦截，可能是服务商未允许跨域访问。');
+    }
+    const responseText = await response.text();
+    let data;
+    try {
+        data = responseText ? JSON.parse(responseText) : null;
+    } catch {
+        data = null;
+    }
+    if (!response.ok) {
+        const detail = data?.error?.message || data?.message || responseText.slice(0, 180);
+        throw new Error(`获取模型列表失败（HTTP ${response.status}）${detail ? `：${detail}` : ''}`);
+    }
+    const models = parseIndependentApiModels(data);
+    if (!models.length) throw new Error('API 已响应，但没有识别到模型列表（需要返回 OpenAI 风格的 data 数组）。');
+    const selectedModel = models.includes(config.model) ? config.model : models[0];
+    settings.independentApi = normalizeIndependentApiSettings({
+        ...config,
+        model: selectedModel,
+        modelOptions: models,
+    });
+    saveSettings();
+    syncApiConnectionUi();
+    setIndependentApiStatus(`已获取 ${models.length} 个模型，当前选择：${selectedModel}`, 'success');
+    notify('success', `已读取 ${models.length} 个独立 API 模型。`);
 }
 
 async function clearIndependentApiKey() {
@@ -446,14 +518,14 @@ async function testIndependentApi() {
     const settings = ensureSettings();
     const config = independentApiConfigFromUi({ persist: false });
     if (!config.endpoint || !config.secretId) {
-        throw new Error('请先填写地址并保存 API Key。模型名称可以留空，默认自动跟随酒馆当前模型。');
+        throw new Error('请先填写地址并保存 API Key，再从独立 API 获取并选择模型。');
     }
     const service = getContext()?.ChatCompletionService;
     if (typeof service?.sendRequest !== 'function') {
         throw new Error('当前酒馆版本没有 Chat Completion 请求接口，无法使用独立 API。');
     }
     const activeModel = resolveIndependentApiModel(getContext(), config);
-    if (!activeModel) throw new Error('无法读取酒馆当前模型，请填写独立 API 的模型名称。');
+    if (!activeModel) throw new Error('请先获取独立 API 模型列表并选择模型，或手动填写模型 ID。');
     setIndependentApiStatus('正在测试连接…');
     const payload = buildIndependentApiPayload({ ...config, model: activeModel }, [
         { role: 'user', content: '请只回复 OK' },
@@ -468,10 +540,7 @@ async function testIndependentApi() {
 }
 
 function resolveIndependentApiModel(ctx = getContext(), config = ensureSettings().independentApi) {
-    const configured = normalizeIndependentApiSettings(config).model;
-    if (configured) return configured;
-    const active = getActiveModelInfo(ctx);
-    return active.liveModel || active.profileModel || active.model || '';
+    return normalizeIndependentApiSettings(config).model;
 }
 
 function updateGenerationModelLabel(ctx = getContext()) {
@@ -480,7 +549,7 @@ function updateGenerationModelLabel(ctx = getContext()) {
     const settings = ensureSettings();
     if (settings.apiMode === 'independent') {
         const api = normalizeIndependentApiSettings(settings.independentApi);
-        modelLabel.textContent = `独立 API · ${resolveIndependentApiModel(ctx, api) || '跟随酒馆当前模型'}`;
+        modelLabel.textContent = `独立 API · ${resolveIndependentApiModel(ctx, api) || '尚未选择模型'}`;
         return;
     }
     modelLabel.textContent = getActiveModelInfo(ctx).label;
@@ -554,8 +623,12 @@ function createStaticUi() {
                                 <input id="pf-independent-api-endpoint" type="url" autocomplete="url" placeholder="https://example.com/v1">
                             </label>
                             <label class="pf-field">
-                                <span>模型名称 <small>可选，留空自动跟随酒馆</small></span>
-                                <input id="pf-independent-api-model" type="text" autocomplete="off" placeholder="留空则使用酒馆当前模型；也可手动覆盖">
+                                <span>模型名称 <small>从独立 API 获取，可手动兜底</small></span>
+                                <div class="pf-api-model-row">
+                                    <input id="pf-independent-api-model" list="pf-independent-api-model-list" type="text" autocomplete="off" placeholder="先点击“获取模型列表”">
+                                    <button type="button" class="pf-mini-button" id="pf-load-independent-api-models">获取模型列表</button>
+                                </div>
+                                <datalist id="pf-independent-api-model-list"></datalist>
                             </label>
                             <label class="pf-field">
                                 <span>最大输出 Token <small>留空则交给 API 默认值</small></span>
@@ -1419,6 +1492,18 @@ function bindUiEvents() {
             button.disabled = false;
         }
     });
+    root.querySelector('#pf-load-independent-api-models')?.addEventListener('click', async event => {
+        const button = event.currentTarget;
+        button.disabled = true;
+        try {
+            await loadIndependentApiModels();
+        } catch (error) {
+            setIndependentApiStatus(readableError(error), 'error');
+            notify('error', '获取模型列表失败：' + readableError(error));
+        } finally {
+            button.disabled = false;
+        }
+    });
     root.querySelector('#pf-clear-independent-api-key')?.addEventListener('click', async event => {
         const button = event.currentTarget;
         button.disabled = true;
@@ -2086,7 +2171,7 @@ function getIndependentApiStreaming(ctx) {
         api: 'independent-chat',
         service,
         settings: { ...settings, model },
-        label: ['独立 API', model || '跟随酒馆当前模型'].join(' · '),
+        label: ['独立 API', model || '尚未选择模型'].join(' · '),
     };
 }
 
@@ -2237,10 +2322,10 @@ async function generateWithCurrentConnection(ctx, { systemPrompt, prompt, maxTok
     if (ensureSettings().apiMode === 'independent') {
         const config = independentApiConfigFromUi({ persist: true });
         if (!hasIndependentApiSettings(config)) {
-            throw new Error('独立 API 尚未配置完整，请填写地址并保存 API Key。模型名称可以留空，默认自动跟随酒馆当前模型。');
+            throw new Error('独立 API 尚未配置完整，请填写地址并保存 API Key，再获取模型列表。');
         }
         const model = resolveIndependentApiModel(liveContext, config);
-        if (!model) throw new Error('无法读取酒馆当前模型，请填写独立 API 的模型名称。');
+        if (!model) throw new Error('请先获取独立 API 模型列表并选择模型，或手动填写模型 ID。');
         const service = liveContext?.ChatCompletionService;
         if (typeof service?.sendRequest !== 'function') {
             throw new Error('当前酒馆版本没有 Chat Completion 请求接口，无法使用独立 API。');
@@ -2347,10 +2432,10 @@ async function generateRawWithStreaming(ctx, { systemPrompt, prompt, maxTokens, 
         if (currentApi?.api === 'independent-chat') {
             const config = independentApiConfigFromUi({ persist: true });
             if (!hasIndependentApiSettings(config)) {
-                throw new Error('独立 API 尚未配置完整，请填写地址并保存 API Key。模型名称可以留空，默认自动跟随酒馆当前模型。');
+                throw new Error('独立 API 尚未配置完整，请填写地址并保存 API Key，再获取模型列表。');
             }
             const model = resolveIndependentApiModel(liveContext, config);
-            if (!model) throw new Error('无法读取酒馆当前模型，请填写独立 API 的模型名称。');
+            if (!model) throw new Error('请先获取独立 API 模型列表并选择模型，或手动填写模型 ID。');
             const messages = [
                 ...(systemPrompt ? [{ role: 'system', content: systemPrompt }] : []),
                 { role: 'user', content: prompt },
