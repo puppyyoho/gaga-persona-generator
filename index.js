@@ -71,6 +71,8 @@ const state = {
     resultView: 'persona',
     capabilities: null,
     secretRuntime: null,
+    independentApiKey: '',
+    loadingIndependentModels: false,
 };
 
 function getContext() {
@@ -426,6 +428,9 @@ async function saveIndependentApi() {
         const resolvedId = String(secretId?.id ?? secretId?.secret_id ?? (secretId || '')).trim();
         if (!resolvedId) throw new Error('酒馆密钥库没有返回有效的 Key 标识。');
         config.secretId = resolvedId;
+        // Keep the key only in memory for the model-list request during this
+        // session. It is never written to extensionSettings or localStorage.
+        state.independentApiKey = key;
         keyInput.value = '';
     }
     if (!config.secretId) throw new Error('请填写 API Key 并保存，或先保存已有 Key。');
@@ -438,60 +443,63 @@ async function saveIndependentApi() {
 }
 
 async function loadIndependentApiModels() {
-    const settings = ensureSettings();
-    let config = independentApiConfigFromUi({ persist: false });
-    if (state.overlay?.querySelector('#pf-independent-api-key')?.value?.trim()) {
-        await saveIndependentApi();
-        config = independentApiConfigFromUi({ persist: false });
-    }
-    if (!config.endpoint || !config.secretId) {
-        throw new Error('请先填写 API 地址并保存 API Key。');
-    }
-    const runtime = await getSecretRuntime();
-    if (typeof runtime?.findSecret !== 'function') {
-        throw new Error('当前酒馆版本无法读取已保存的 Key，无法安全获取模型列表。');
-    }
-    const secretKey = runtime.SECRET_KEYS?.CUSTOM || 'api_key_custom';
-    const secret = await runtime.findSecret(secretKey, config.secretId);
-    if (!secret) throw new Error('无法读取独立 API Key，请重新保存一次。');
-    const url = buildIndependentApiModelsUrl(config.endpoint);
-    setIndependentApiStatus('正在从独立 API 获取模型列表…');
-    let response;
+    if (state.loadingIndependentModels) return;
+    state.loadingIndependentModels = true;
     try {
-        response = await fetch(url, {
-            method: 'GET',
-            headers: {
-                Accept: 'application/json',
-                Authorization: `Bearer ${secret}`,
-            },
-            cache: 'no-store',
+        const settings = ensureSettings();
+        let config = independentApiConfigFromUi({ persist: false });
+        if (state.overlay?.querySelector('#pf-independent-api-key')?.value?.trim()) {
+            await saveIndependentApi();
+            config = independentApiConfigFromUi({ persist: false });
+        }
+        if (!config.endpoint || !config.secretId) {
+            throw new Error('请先填写 API 地址并保存 API Key。');
+        }
+        const secret = state.independentApiKey;
+        if (!secret) {
+            throw new Error('酒馆默认禁止扩展读取已保存 Key。请在 API Key 框临时输入一次，再点击“获取模型列表”；不会再次保存到插件设置。');
+        }
+        const url = buildIndependentApiModelsUrl(config.endpoint);
+        setIndependentApiStatus('正在从独立 API 获取模型列表…');
+        let response;
+        try {
+            response = await fetch(url, {
+                method: 'GET',
+                headers: {
+                    Accept: 'application/json',
+                    Authorization: `Bearer ${secret}`,
+                },
+                cache: 'no-store',
+            });
+        } catch {
+            throw new Error('模型列表请求被浏览器拦截，可能是服务商未允许跨域访问。');
+        }
+        const responseText = await response.text();
+        let data;
+        try {
+            data = responseText ? JSON.parse(responseText) : null;
+        } catch {
+            data = null;
+        }
+        if (!response.ok) {
+            const detail = data?.error?.message || data?.message || responseText.slice(0, 180);
+            throw new Error(`获取模型列表失败（HTTP ${response.status}）${detail ? `：${detail}` : ''}`);
+        }
+        const models = parseIndependentApiModels(data);
+        if (!models.length) throw new Error('API 已响应，但没有识别到模型列表（需要返回 OpenAI 风格的 data 数组）。');
+        const selectedModel = models.includes(config.model) ? config.model : models[0];
+        settings.independentApi = normalizeIndependentApiSettings({
+            ...config,
+            model: selectedModel,
+            modelOptions: models,
         });
-    } catch (error) {
-        throw new Error('模型列表请求被浏览器拦截，可能是服务商未允许跨域访问。');
+        saveSettings();
+        syncApiConnectionUi();
+        setIndependentApiStatus(`已获取 ${models.length} 个模型，当前选择：${selectedModel}`, 'success');
+        notify('success', `已读取 ${models.length} 个独立 API 模型。`);
+    } finally {
+        state.loadingIndependentModels = false;
     }
-    const responseText = await response.text();
-    let data;
-    try {
-        data = responseText ? JSON.parse(responseText) : null;
-    } catch {
-        data = null;
-    }
-    if (!response.ok) {
-        const detail = data?.error?.message || data?.message || responseText.slice(0, 180);
-        throw new Error(`获取模型列表失败（HTTP ${response.status}）${detail ? `：${detail}` : ''}`);
-    }
-    const models = parseIndependentApiModels(data);
-    if (!models.length) throw new Error('API 已响应，但没有识别到模型列表（需要返回 OpenAI 风格的 data 数组）。');
-    const selectedModel = models.includes(config.model) ? config.model : models[0];
-    settings.independentApi = normalizeIndependentApiSettings({
-        ...config,
-        model: selectedModel,
-        modelOptions: models,
-    });
-    saveSettings();
-    syncApiConnectionUi();
-    setIndependentApiStatus(`已获取 ${models.length} 个模型，当前选择：${selectedModel}`, 'success');
-    notify('success', `已读取 ${models.length} 个独立 API 模型。`);
 }
 
 async function clearIndependentApiKey() {
@@ -507,6 +515,7 @@ async function clearIndependentApiKey() {
     }
     const secretKey = runtime.SECRET_KEYS?.CUSTOM || 'api_key_custom';
     await runtime.deleteSecret(secretKey, config.secretId);
+    state.independentApiKey = '';
     settings.independentApi = normalizeIndependentApiSettings({ ...config, secretId: '' });
     saveSettings();
     syncApiConnectionUi();
@@ -640,8 +649,8 @@ function createStaticUi() {
                             </label>
                         </div>
                         <label class="pf-field pf-top-gap">
-                            <span>API Key <small>只保存到酒馆密钥库，不写入扩展设置</small></span>
-                            <input id="pf-independent-api-key" type="password" autocomplete="new-password" placeholder="首次使用时填写；已保存后可留空">
+                            <span>API Key <small>保存到酒馆密钥库；刷新模型列表时只在当前会话临时使用</small></span>
+                            <input id="pf-independent-api-key" type="password" autocomplete="new-password" placeholder="填写后点击保存；本次会话刷新列表可留空">
                         </label>
                         <div class="pf-api-actions">
                             <button type="button" class="pf-mini-button" id="pf-save-independent-api">保存独立 API</button>

@@ -113,7 +113,6 @@ assert.match(indexSource, /pf-independent-api-model/);
 assert.match(indexSource, /pf-load-independent-api-models/);
 assert.match(indexSource, /buildIndependentApiModelsUrl/);
 assert.match(indexSource, /parseIndependentApiModels/);
-assert.match(indexSource, /findSecret/);
 assert.match(indexSource, /pf-independent-api-key/);
 assert.match(indexSource, /getSecretRuntime/);
 assert.match(indexSource, /writeSecret/);
