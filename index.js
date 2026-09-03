@@ -23,6 +23,7 @@ import {
     buildLegacyChatStreamingPayload,
     buildLegacyTextStreamingPayload,
     detectHostCapabilities,
+    ensureChatCompletionPayloadModel,
     extractGeneratedTextCompat,
     extractReasoningCompat,
     getActiveModelInfo,
@@ -32,13 +33,14 @@ import {
     readSelectedConnectionProfile,
     readOpeningGreetingCompat,
     readPersonaCompat,
+    resolveChatCompletionModel,
     subscribeHostEvents,
 } from './st-compat.js';
 
 const EXTENSION_NAME = 'persona-forge';
 const DISPLAY_NAME = '嘎嘎人设生成器';
 const SETTINGS_KEY = 'personaForge';
-const VERSION = '0.7.9';
+const VERSION = '0.7.10';
 const FAB_ICON_URL = new URL('./icon.png', import.meta.url).href;
 const DEFAULT_FAB_SIZE = 65;
 
@@ -1761,13 +1763,14 @@ function getCurrentApiStreaming(ctx) {
         && typeof chatService?.sendRequest === 'function'
         && sourceContext?.chatCompletionSettings) {
         const settings = sourceContext.chatCompletionSettings;
+        const model = resolveChatCompletionModel(sourceContext, settings);
         return {
             api: 'chat',
             service: chatService,
             settings,
             label: [
                 settings.chat_completion_source || 'Chat Completion',
-                sourceContext.getChatCompletionModel?.(settings),
+                model,
             ].filter(Boolean).join(' · '),
         };
     }
@@ -1820,24 +1823,31 @@ async function buildCoreChatStreamingPayload(ctx, currentApi, messages) {
     const runtime = await import('/scripts/openai.js');
     const settings = cloneSettings(currentApi.settings);
     settings.stream_openai = true;
+    let model = resolveChatCompletionModel(ctx, settings);
+    if (!model && typeof runtime.getChatCompletionModel === 'function') {
+        try {
+            // SillyTavern's resolver expects the complete settings object. Passing
+            // only chat_completion_source returns no model on current versions.
+            model = String(runtime.getChatCompletionModel(settings) || '').trim();
+        } catch (error) {
+            console.warn(`[${DISPLAY_NAME}] Could not resolve the streaming model from the host runtime.`, error);
+        }
+    }
+    if (!model) {
+        throw new Error('无法读取当前 Chat Completion 模型，已取消这次流式请求');
+    }
+
     let payload;
     if (typeof runtime.createGenerationParameters === 'function') {
-        const model = ctx.getChatCompletionModel?.(settings)
-            ?? runtime.getChatCompletionModel?.(settings.chat_completion_source);
         const built = await runtime.createGenerationParameters(settings, model, 'normal', messages);
         payload = built?.generate_data;
     } else {
         // SillyTavern 1.14-1.17 exposes the streaming request service but not
         // createGenerationParameters(). Recreate the public request shape from
         // active settings without mutating the user's preset.
-        const model = runtime.getChatCompletionModel?.(settings)
-            ?? ctx.getChatCompletionModel?.(settings)
-            ?? settings.model;
         payload = buildLegacyChatStreamingPayload(settings, messages, model, currentApi.service);
     }
-    if (!payload || typeof payload !== 'object') {
-        throw new Error('无法构造原生 Chat Completion 流式请求');
-    }
+    ensureChatCompletionPayloadModel(payload, model);
 
     payload.stream = true;
     delete payload.n;
@@ -1845,11 +1855,19 @@ async function buildCoreChatStreamingPayload(ctx, currentApi, messages) {
     delete payload.tool_choice;
     delete payload.assistant_prefill;
 
+    // Some host versions or provider adapters omit the field even though the
+    // model was supplied to the parameter builder. OpenAI-compatible endpoints
+    // reject such a body with 422, so preserve the live model explicitly.
+    ensureChatCompletionPayloadModel(payload, model);
+
     const readyEvent = ctx.eventTypes?.CHAT_COMPLETION_SETTINGS_READY;
     if (readyEvent && typeof ctx.eventSource?.emit === 'function') {
         await ctx.eventSource.emit(readyEvent, payload);
     }
-    return payload;
+    return ensureChatCompletionPayloadModel(
+        payload,
+        resolveChatCompletionModel(ctx, currentApi.settings) || model,
+    );
 }
 
 function mergeStreamText(previous, next) {

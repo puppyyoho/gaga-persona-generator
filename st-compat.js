@@ -88,7 +88,7 @@ export function readSelectedConnectionProfile(ctx) {
     return profile ? { ...profile, id: profileId } : null;
 }
 
-function modelFromSettings(ctx, settings) {
+export function resolveChatCompletionModel(ctx, settings = ctx?.chatCompletionSettings) {
     if (!settings || typeof settings !== 'object') return '';
     try {
         const model = ctx?.getChatCompletionModel?.(settings);
@@ -127,6 +127,20 @@ function modelFromSettings(ctx, settings) {
     return String((field && settings[field]) || settings.model || settings.model_name || '').trim();
 }
 
+export function ensureChatCompletionPayloadModel(payload, model) {
+    if (!payload || typeof payload !== 'object') {
+        throw new Error('无法构造原生 Chat Completion 流式请求');
+    }
+    if (!String(payload.model || '').trim()) {
+        const fallback = String(model || '').trim();
+        if (fallback) payload.model = fallback;
+    }
+    if (!String(payload.model || '').trim()) {
+        throw new Error('当前连接没有提供模型名称，已取消这次流式请求');
+    }
+    return payload;
+}
+
 export function getActiveModelInfo(ctx) {
     const profile = readSelectedConnectionProfile(ctx);
     const settings = ctx?.chatCompletionSettings;
@@ -136,7 +150,7 @@ export function getActiveModelInfo(ctx) {
         || (mainApi === 'textgenerationwebui' ? settings?.api_type : mainApi)
         || '',
     ).trim();
-    const liveModel = modelFromSettings(ctx, settings);
+    const liveModel = resolveChatCompletionModel(ctx, settings);
     const profileModel = String(profile?.model || '').trim();
     const model = liveModel || profileModel;
     const profileName = String(profile?.name || '').trim();
