@@ -70,6 +70,14 @@ test('parses standard and provider-specific model list shapes', () => {
     assert.deepEqual(parseIndependentApiModels({
         models: [{ name: 'local-a' }, 'local-b'],
     }), ['local-a', 'local-b']);
+    assert.deepEqual(parseIndependentApiModels({
+        result: { models: { 'provider/model-a': {}, 'provider/model-b': {} } },
+    }), ['provider/model-a', 'provider/model-b']);
+    assert.deepEqual(parseIndependentApiModels({
+        data: { 'provider/model-c': {}, 'provider/model-d': {} },
+    }), ['provider/model-c', 'provider/model-d']);
+    const manyModels = Array.from({ length: 650 }, (_, index) => ({ id: `model-${index}` }));
+    assert.equal(parseIndependentApiModels({ data: manyModels }).length, manyModels.length);
     assert.equal(buildIndependentApiModelsUrl('https://example.test/v1/chat/completions'), 'https://example.test/v1/models');
 });
 
