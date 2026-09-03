@@ -38,7 +38,7 @@ import {
 const EXTENSION_NAME = 'persona-forge';
 const DISPLAY_NAME = '嘎嘎人设生成器';
 const SETTINGS_KEY = 'personaForge';
-const VERSION = '0.7.5';
+const VERSION = '0.7.6';
 const FAB_ICON_URL = new URL('./icon.png', import.meta.url).href;
 const DEFAULT_FAB_SIZE = 65;
 const MAX_LORE_CHARS_DEFAULT = 52000;
@@ -611,7 +611,7 @@ function createSettingsUi() {
     container.appendChild(block);
     state.settingsPanel = block;
 
-    block.querySelector('#pf-open-settings')?.addEventListener('click', openPanel);
+    block.querySelector('#pf-open-settings')?.addEventListener('click', openPanelSafely);
     block.querySelector('#pf-show-fab')?.addEventListener('change', event => {
         settings.showFloatingButton = Boolean(event.target.checked);
         saveSettings();
@@ -734,6 +734,7 @@ function bindFloatingDrag(button) {
     if (button.dataset.dragBound === 'true') return;
     button.dataset.dragBound = 'true';
     let drag = null;
+    let suppressClickUntil = 0;
 
     button.addEventListener('pointerdown', event => {
         if (event.pointerType === 'mouse' && event.button !== 0) return;
@@ -746,40 +747,58 @@ function bindFloatingDrag(button) {
             top: rect.top,
             moved: false,
         };
-        setFloatingPosition(button, rect.left, rect.top);
         button.classList.add('is-dragging');
-        button.setPointerCapture?.(event.pointerId);
-        event.preventDefault();
+        try {
+            button.setPointerCapture?.(event.pointerId);
+        } catch (error) {
+            // Some Android WebViews expose pointer capture but throw when it
+            // is used on a fixed-position element. A normal tap still works.
+            console.debug(`[${DISPLAY_NAME}] Pointer capture unavailable.`, error);
+        }
     });
 
     button.addEventListener('pointermove', event => {
         if (!drag || event.pointerId !== drag.pointerId) return;
         const deltaX = event.clientX - drag.startX;
         const deltaY = event.clientY - drag.startY;
-        if (Math.hypot(deltaX, deltaY) > 4) drag.moved = true;
+        if (Math.hypot(deltaX, deltaY) > 10) drag.moved = true;
+        if (!drag.moved) return;
         setFloatingPosition(button, drag.left + deltaX, drag.top + deltaY);
-        event.preventDefault();
+        if (event.cancelable) event.preventDefault();
     });
 
     const finishDrag = event => {
         if (!drag || event.pointerId !== drag.pointerId) return;
-        if (button.hasPointerCapture?.(event.pointerId)) button.releasePointerCapture(event.pointerId);
+        const cancelled = event.type === 'pointercancel';
+        const didMove = drag.moved;
+        const wasTap = !cancelled && !didMove;
+        try {
+            if (button.hasPointerCapture?.(event.pointerId)) button.releasePointerCapture(event.pointerId);
+        } catch (error) {
+            console.debug(`[${DISPLAY_NAME}] Could not release pointer capture.`, error);
+        }
         button.classList.remove('is-dragging');
-        if (drag.moved) {
-            button.dataset.dragged = 'true';
+        if (didMove) {
             setFloatingPosition(button, Number.parseFloat(button.style.left), Number.parseFloat(button.style.top), true);
         }
         drag = null;
+        // Open from pointerup itself. Android WebViews do not consistently
+        // synthesize a click after pointer capture or touch-action: none.
+        // The click handler remains as a keyboard and old-WebView fallback.
+        // An unmoved pointercancel may still be followed by a valid fallback
+        // click on older WebViews, so only suppress after a completed gesture
+        // or a real drag.
+        if (!cancelled || didMove) suppressClickUntil = Date.now() + 700;
+        if (wasTap) openPanelSafely();
     };
     button.addEventListener('pointerup', finishDrag);
     button.addEventListener('pointercancel', finishDrag);
     button.addEventListener('click', event => {
-        if (button.dataset.dragged === 'true') {
-            button.dataset.dragged = '';
+        if (Date.now() < suppressClickUntil) {
             event.preventDefault();
             return;
         }
-        openPanel();
+        openPanelSafely();
     });
 }
 
@@ -1413,6 +1432,21 @@ async function openPanel() {
         if (contextLine) contextLine.textContent = '面板已打开，但角色或世界书读取失败；可稍后点击“刷新识别”。';
         notify('warning', '面板已打开，但当前角色与世界书读取失败。');
     }
+}
+
+function openPanelSafely() {
+    try {
+        const opening = openPanel();
+        opening?.catch?.(reportPanelOpenError);
+    } catch (error) {
+        reportPanelOpenError(error);
+    }
+}
+
+function reportPanelOpenError(error) {
+    console.error(`[${DISPLAY_NAME}] Could not open panel.`, error);
+    const detail = String(error?.message || error || '未知错误');
+    notify('error', `打开失败：${detail}`);
 }
 
 function closePanel() {
