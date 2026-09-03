@@ -38,10 +38,9 @@ import {
 const EXTENSION_NAME = 'persona-forge';
 const DISPLAY_NAME = '嘎嘎人设生成器';
 const SETTINGS_KEY = 'personaForge';
-const VERSION = '0.7.8';
+const VERSION = '0.7.9';
 const FAB_ICON_URL = new URL('./icon.png', import.meta.url).href;
 const DEFAULT_FAB_SIZE = 65;
-const MAX_LORE_CHARS_DEFAULT = 52000;
 
 const state = {
     overlay: null,
@@ -228,7 +227,6 @@ function ensureSettings() {
         floatingPosition: null,
         floatingSize: DEFAULT_FAB_SIZE,
         floatingIcon: '',
-        maxLoreChars: MAX_LORE_CHARS_DEFAULT,
         lastResult: '',
         lastStructuredResult: null,
         lastMode: 'random',
@@ -272,14 +270,16 @@ function ensureSettings() {
         sectionSelection: mergedSections,
         customSectionPresets: normalizeCustomSectionPresets(current.customSectionPresets),
     };
-    // Remove the retired optional summary setting from older installations.
+    // Remove retired settings from older installations.
     delete migrated.includeSummary;
+    delete migrated.maxLoreChars;
     const changed = previousValue !== JSON.stringify(migrated);
     // Keep the same object reference. Several UI operations read settings
     // again while handling one event; replacing the object here would make
     // the caller mutate a stale copy and silently lose its changes.
     Object.assign(current, migrated);
     delete current.includeSummary;
+    delete current.maxLoreChars;
     root[SETTINGS_KEY] = current;
     if (changed) {
         ctx.saveSettingsDebounced?.();
@@ -495,7 +495,7 @@ function createStaticUi() {
                         <small id="pf-book-count">0 个已选</small>
                     </summary>
                     <div class="pf-detail-body">
-                        <p class="pf-muted">默认勾选当前真正启用或绑定的世界书。也可以手动补选其他世界书，生成时不会读取当前聊天正文。</p>
+                        <p class="pf-muted">默认勾选当前真正启用或绑定的世界书。生成时会完整读取所选世界书中已启用且有正文的条目，不自行截断；也不会读取当前聊天正文。</p>
                         <div class="pf-book-toolbar">
                             <button class="pf-mini-button" type="button" id="pf-select-active">只选当前启用</button>
                             <button class="pf-mini-button" type="button" id="pf-select-all">全选</button>
@@ -1522,32 +1522,12 @@ function entryToText(entry) {
     return `【世界书：${entry.source}${title}】${keys}\n${entry.content}`;
 }
 
-function getContextBudgets() {
-    const ctx = getContext();
-    const maxContext = Number(ctx.maxContext) || 0;
-    if (!maxContext) {
-        return {
-            characterChars: 18000,
-            totalSafeChars: MAX_LORE_CHARS_DEFAULT + 22000,
-        };
-    }
-    return {
-        characterChars: Math.max(2500, Math.min(18000, Math.floor(maxContext * 0.32))),
-        totalSafeChars: Math.max(6000, Math.floor(maxContext * 0.8)),
-    };
-}
-
-async function collectWorldLore(characterContextLength = 0) {
+async function collectWorldLore() {
     const ctx = getContext();
     const runtime = await getWorldInfoRuntime();
     const loadWorldInfo = typeof ctx.loadWorldInfo === 'function'
         ? ctx.loadWorldInfo.bind(ctx)
         : (typeof runtime.loadWorldInfo === 'function' ? runtime.loadWorldInfo : null);
-    const settings = ensureSettings();
-    const budgets = getContextBudgets();
-    const configuredLimit = Math.max(1500, Number(settings.maxLoreChars) || MAX_LORE_CHARS_DEFAULT);
-    const availableForLore = Math.max(1500, budgets.totalSafeChars - characterContextLength - 3500);
-    const limit = Math.min(configuredLimit, availableForLore);
     const entries = [];
     const failures = [];
 
@@ -1566,32 +1546,21 @@ async function collectWorldLore(characterContextLength = 0) {
         entries.push(...extractEntries(state.embeddedBook, '角色卡内嵌 Character Book'));
     }
 
-    // Constants and high-order rules tend to contain broad setting constraints, so keep them first if a large lorebook must be trimmed.
-    entries.sort((a, b) => Number(b.constant) - Number(a.constant) || b.order - a.order || a.index - b.index);
-
-    let usedChars = 0;
-    let included = 0;
-    const blocks = [];
-    for (const entry of entries) {
-        const text = neutralizePersonaReferences(
+    const blocks = entries.map(entry => (
+        neutralizePersonaReferences(
             entryToText(entry),
             ctx.name1,
             getCharacterName(getCurrentCharacter(ctx)),
-        );
-        if (usedChars + text.length > limit && blocks.length) continue;
-        blocks.push(text.slice(0, Math.max(0, limit - usedChars)));
-        usedChars += Math.min(text.length, Math.max(0, limit - usedChars));
-        included += 1;
-        if (usedChars >= limit) break;
-    }
+        )
+    ));
+    const text = blocks.join('\n\n');
 
     return {
-        text: blocks.join('\n\n'),
+        text,
         totalEntries: entries.length,
-        includedEntries: included,
-        truncated: included < entries.length,
+        includedEntries: entries.length,
         failures,
-        chars: usedChars,
+        chars: text.length,
     };
 }
 
@@ -1601,7 +1570,6 @@ function collectCharacterContext() {
     if (!character) return '当前未选择单角色。';
 
     const name = getCharacterName(character);
-    const maxChars = getContextBudgets().characterChars;
     const fields = [
         ['姓名', name],
         ['Description', getField(character, 'description')],
@@ -1616,7 +1584,7 @@ function collectCharacterContext() {
         const cleaned = neutralizePersonaReferences(value, ctx.name1, name);
         return '【' + label + '】\n' + cleaned;
     });
-    return blocks.join('\n\n').slice(0, maxChars);
+    return blocks.join('\n\n');
 }
 
 function getCharacterDefaultGreeting(character = getCurrentCharacter(getContext())) {
@@ -1649,12 +1617,11 @@ function collectOpeningGreeting() {
     const { text: greeting } = getOpeningGreetingReference(character, ctx);
     if (!greeting) return '';
 
-    const maxChars = Math.max(1200, Math.min(10000, Math.floor(getContextBudgets().totalSafeChars * 0.12)));
     return neutralizePersonaReferences(
         greeting,
         ctx.name1,
         getCharacterName(character),
-    ).slice(0, maxChars);
+    );
 }
 
 function collectCurrentPersonaText() {
@@ -2161,7 +2128,7 @@ async function generatePersona() {
         if (options.mode === 'refine' && !currentPersonaText) {
             throw new Error('当前 U 的 Persona Description 为空，请先填写人设后再使用优化模式。');
         }
-        const lore = await collectWorldLore(characterContext.length + openingGreeting.length + currentPersonaText.length);
+        const lore = await collectWorldLore();
         const prompt = options.mode === 'refine'
             ? buildPersonaRefinementPrompt({
                 options,
@@ -2231,9 +2198,8 @@ async function generatePersona() {
         state.resultView = 'persona';
 
         const notes = [];
-        notes.push('已读取 ' + lore.includedEntries + '/' + lore.totalEntries + ' 条世界书内容');
+        notes.push('已完整读取 ' + lore.includedEntries + ' 条世界书内容（' + lore.chars + ' 字）');
         if (openingGreeting) notes.push('已参考角色开场白');
-        if (lore.truncated) notes.push('世界书较大，已按广义规则优先截取');
         if (lore.failures.length) notes.push(lore.failures.length + ' 个世界书读取失败');
 
         const settings = ensureSettings();
