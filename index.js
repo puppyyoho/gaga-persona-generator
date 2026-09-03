@@ -747,13 +747,16 @@ function bindFloatingDrag(button) {
         if (!drag || event.pointerId !== drag.pointerId) return;
         const deltaX = event.clientX - drag.startX;
         const deltaY = event.clientY - drag.startY;
-        if (Math.hypot(deltaX, deltaY) > 4) drag.moved = true;
-        setFloatingPosition(button, drag.left + deltaX, drag.top + deltaY);
-        event.preventDefault();
+        if (Math.hypot(deltaX, deltaY) > 8) drag.moved = true;
+        if (drag.moved) {
+            setFloatingPosition(button, drag.left + deltaX, drag.top + deltaY);
+            event.preventDefault();
+        }
     });
 
     const finishDrag = event => {
         if (!drag || event.pointerId !== drag.pointerId) return;
+        const wasTap = event.type !== 'pointercancel' && !drag.moved;
         if (button.hasPointerCapture?.(event.pointerId)) button.releasePointerCapture(event.pointerId);
         button.classList.remove('is-dragging');
         if (drag.moved) {
@@ -761,10 +764,25 @@ function bindFloatingDrag(button) {
             setFloatingPosition(button, Number.parseFloat(button.style.left), Number.parseFloat(button.style.top), true);
         }
         drag = null;
+        // Some older Android WebViews do not synthesize a click after pointer
+        // capture. Open on a tap directly, then consume the duplicate click
+        // emitted by browsers that do synthesize one.
+        if (wasTap) {
+            button.dataset.skipClick = 'true';
+            globalThis.setTimeout(() => {
+                button.dataset.skipClick = '';
+            }, 500);
+            void openPanel();
+        }
     };
     button.addEventListener('pointerup', finishDrag);
     button.addEventListener('pointercancel', finishDrag);
     button.addEventListener('click', event => {
+        if (button.dataset.skipClick === 'true') {
+            button.dataset.skipClick = '';
+            event.preventDefault();
+            return;
+        }
         if (button.dataset.dragged === 'true') {
             button.dataset.dragged = '';
             event.preventDefault();
@@ -1350,9 +1368,16 @@ function currentMode() {
 
 async function openPanel() {
     createStaticUi();
-    await refreshContextUi(false);
-
+    const overlay = state.overlay;
     const settings = ensureSettings();
+
+    // Show the shell before reading host data. Older Tavern/WebView builds
+    // can fail or stall while enumerating world books; the close button must
+    // remain available even when that refresh cannot complete.
+    overlay.classList.add('is-open');
+    overlay.setAttribute('aria-hidden', 'false');
+    document.documentElement.classList.add('pf-modal-open');
+
     setMode(settings.lastMode || 'random');
     syncControlsFromSettings();
     renderSectionOptions();
@@ -1370,10 +1395,21 @@ async function openPanel() {
         if (saved) setResult(saved, '上次生成结果');
     }
 
-    state.overlay.classList.add('is-open');
-    state.overlay.setAttribute('aria-hidden', 'false');
-    document.documentElement.classList.add('pf-modal-open');
-    state.overlay.querySelector('#pf-close')?.focus({ preventScroll: true });
+    const closeButton = overlay.querySelector('#pf-close');
+    try {
+        closeButton?.focus({ preventScroll: true });
+    } catch {
+        closeButton?.focus();
+    }
+
+    try {
+        await refreshContextUi(false);
+    } catch (error) {
+        console.warn(`[${DISPLAY_NAME}] Could not refresh context while opening panel.`, error);
+        const contextLine = overlay.querySelector('#pf-context-line');
+        if (contextLine) contextLine.textContent = '面板已打开，但角色或世界书读取失败；可稍后点击“刷新识别”。';
+        notify('warning', '面板已打开，但当前角色与世界书读取失败。');
+    }
 }
 
 function closePanel() {
