@@ -741,7 +741,6 @@ function bindFloatingDrag(button) {
         setFloatingPosition(button, rect.left, rect.top);
         button.classList.add('is-dragging');
         button.setPointerCapture?.(event.pointerId);
-        event.preventDefault();
     });
 
     button.addEventListener('pointermove', event => {

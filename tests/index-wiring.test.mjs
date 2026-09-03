@@ -83,6 +83,7 @@ assert.match(indexSource, /pf-content-jump/);
 assert.match(indexSource, /resolveTargetLength/);
 assert.match(indexSource, /floatingPosition/);
 assert.match(indexSource, /bindFloatingDrag/);
+assert.doesNotMatch(indexSource, /button\.setPointerCapture\?\.\(event\.pointerId\);\s*event\.preventDefault\(\);/);
 assert.match(indexSource, /isPhoneViewport/);
 assert.match(indexSource, /pf-open-button/);
 assert.match(indexSource, /syncTargetLengthControl/);
