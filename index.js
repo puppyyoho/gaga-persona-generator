@@ -38,7 +38,7 @@ import {
 const EXTENSION_NAME = 'persona-forge';
 const DISPLAY_NAME = '嘎嘎人设生成器';
 const SETTINGS_KEY = 'personaForge';
-const VERSION = '0.7.7';
+const VERSION = '0.7.8';
 const FAB_ICON_URL = new URL('./icon.png', import.meta.url).href;
 const DEFAULT_FAB_SIZE = 65;
 const MAX_LORE_CHARS_DEFAULT = 52000;
@@ -314,7 +314,7 @@ function createStaticUi() {
                     <h2 id="pf-title">世界观适配 User 人设生成器</h2>
                     <div class="pf-context-line" id="pf-context-line">正在读取当前角色与世界书…</div>
                 </div>
-                <button class="pf-icon-button" id="pf-close" type="button" aria-label="关闭">✕</button>
+                <button class="pf-icon-button" id="pf-close" type="button" aria-label="关闭"><span class="pf-close-glyph" aria-hidden="true"></span></button>
             </header>
 
             <div class="pf-scroll">
@@ -812,7 +812,7 @@ function updateFloatingButton() {
     if (icon && icon.src !== getFloatingIconSrc(settings)) icon.src = getFloatingIconSrc(settings);
     restoreFloatingPosition(button);
     // Keep the entry visible on every viewport. Mobile gets a compact variant via CSS.
-    button.hidden = false;
+    button.hidden = Boolean(state.overlay?.classList.contains('is-open'));
     button.classList.toggle('is-mobile', mobileViewport);
     if (mobileViewport && !ensureSettings().floatingPosition) {
         const rect = button.getBoundingClientRect();
@@ -1374,7 +1374,8 @@ async function openPanel() {
     state.overlay.classList.add('is-open');
     state.overlay.setAttribute('aria-hidden', 'false');
     document.documentElement.classList.add('pf-modal-open');
-    state.overlay.querySelector('#pf-close')?.focus({ preventScroll: true });
+    const floatingButton = document.getElementById('pf-fab');
+    if (floatingButton) floatingButton.hidden = true;
 }
 
 function closePanel() {
@@ -1382,6 +1383,7 @@ function closePanel() {
     state.overlay.classList.remove('is-open');
     state.overlay.setAttribute('aria-hidden', 'true');
     document.documentElement.classList.remove('pf-modal-open');
+    updateFloatingButton();
 }
 
 async function refreshContextUi(force = false) {
