@@ -3,12 +3,14 @@ import {
     buildLegacyChatStreamingPayload,
     buildLegacyTextStreamingPayload,
     detectHostCapabilities,
+    ensureChatCompletionPayloadModel,
     extractGeneratedTextCompat,
     getActiveModelInfo,
     generateRawCompat,
     readOpeningGreetingCompat,
     readPersonaCompat,
     readSelectedConnectionProfile,
+    resolveChatCompletionModel,
     subscribeHostEvents,
 } from '../st-compat.js';
 
@@ -104,6 +106,23 @@ const liveModelContext = {
 assert.equal(getActiveModelInfo(liveModelContext).model, '初始模型');
 liveSettings.openai_model = '切换后的模型';
 assert.equal(getActiveModelInfo(liveModelContext).model, '切换后的模型');
+assert.equal(
+    resolveChatCompletionModel({}, {
+        chat_completion_source: 'openrouter',
+        openrouter_model: 'anthropic/claude-opus-4.6',
+    }),
+    'anthropic/claude-opus-4.6',
+);
+const modelPayload = ensureChatCompletionPayloadModel({ stream: true }, 'anthropic/claude-opus-4.6');
+assert.equal(modelPayload.model, 'anthropic/claude-opus-4.6');
+assert.equal(
+    ensureChatCompletionPayloadModel({ model: 'adapter/model' }, 'fallback/model').model,
+    'adapter/model',
+);
+assert.throws(
+    () => ensureChatCompletionPayloadModel({ stream: true }, ''),
+    /没有提供模型名称/,
+);
 const profileContext = {
     ...liveModelContext,
     extensionSettings: {

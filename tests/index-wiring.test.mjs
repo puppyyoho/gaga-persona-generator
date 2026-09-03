@@ -98,6 +98,8 @@ assert.match(indexSource, /streamOutput/);
 assert.match(indexSource, /generateRawWithStreaming/);
 assert.match(indexSource, /getCurrentApiStreaming/);
 assert.match(indexSource, /getActiveModelInfo/);
+assert.match(indexSource, /resolveChatCompletionModel/);
+assert.match(indexSource, /ensureChatCompletionPayloadModel/);
 assert.match(indexSource, /readSelectedConnectionProfile/);
 assert.match(indexSource, /generateWithCurrentConnection/);
 assert.match(indexSource, /getResponseTokenBudget/);
@@ -115,6 +117,8 @@ assert.match(indexSource, /const currentApi = connection \? null : getCurrentApi
 assert.match(indexSource, /CONNECTION_PROFILE_LOADED/);
 assert.match(indexSource, /Target Chinese character count is a writing instruction, not an API token limit/);
 assert.match(indexSource, /createGenerationParameters\(settings, model, 'normal', messages\)/);
+assert.match(indexSource, /runtime\.getChatCompletionModel\(settings\)/);
+assert.doesNotMatch(indexSource, /runtime\.getChatCompletionModel\?\.\(settings\.chat_completion_source\)/);
 assert.match(indexSource, /CHAT_COMPLETION_SETTINGS_READY/);
 assert.match(indexSource, /TEXT_COMPLETION_SETTINGS_READY/);
 assert.match(indexSource, /throw new Error\(`\$\{source\} · \$\{detail\}`\)/);
