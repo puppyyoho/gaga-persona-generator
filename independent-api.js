@@ -39,7 +39,9 @@ export function normalizeIndependentApiSettings(value) {
 
 export function hasIndependentApiSettings(value) {
     const settings = normalizeIndependentApiSettings(value);
-    return Boolean(settings.endpoint && settings.model && settings.secretId);
+    // The model may intentionally be blank: the caller can resolve it from
+    // SillyTavern's currently active model before sending the request.
+    return Boolean(settings.endpoint && settings.secretId);
 }
 
 export function buildIndependentApiPayload(config, messages, { stream = false } = {}) {
@@ -48,11 +50,11 @@ export function buildIndependentApiPayload(config, messages, { stream = false } 
         chat_completion_source: INDEPENDENT_API_SOURCE,
         custom_url: settings.endpoint,
         secret_id: settings.secretId,
-        model: settings.model,
         messages: Array.isArray(messages) ? messages : [],
         stream: Boolean(stream),
         temperature: settings.temperature,
     };
+    if (settings.model) payload.model = settings.model;
     if (settings.maxTokens) payload.max_tokens = settings.maxTokens;
     return payload;
 }
