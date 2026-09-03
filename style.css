@@ -25,6 +25,7 @@ html.pf-modal-open body {
     align-items: center;
     justify-content: center;
     padding: 18px;
+    overflow: hidden;
     background: rgba(0, 0, 0, .48);
     backdrop-filter: blur(7px);
     -webkit-backdrop-filter: blur(7px);
@@ -35,8 +36,13 @@ html.pf-modal-open body {
 }
 
 .pf-modal {
+    /* Fallbacks keep the sheet bounded in older WebViews used by Tavern 1.14. */
+    width: 96vw;
+    max-width: 900px;
+    max-height: 94vh;
     width: min(900px, 96vw);
     max-height: min(920px, 94dvh);
+    min-height: 0;
     display: flex;
     flex-direction: column;
     overflow: hidden;
@@ -57,6 +63,7 @@ html.pf-modal-open body {
     border-bottom: 1px solid var(--pf-border);
     background: var(--pf-bg);
     flex: 0 0 auto;
+    min-width: 0;
 }
 
 .pf-heading-wrap {
@@ -106,11 +113,16 @@ html.pf-modal-open body {
     background: var(--pf-card);
     color: var(--pf-text);
     font-size: 17px;
+    line-height: 1;
+    appearance: none;
+    -webkit-appearance: none;
     cursor: pointer;
     touch-action: manipulation;
 }
 
 .pf-scroll {
+    flex: 1 1 auto;
+    min-height: 0;
     overflow: auto;
     -webkit-overflow-scrolling: touch;
     overscroll-behavior: contain;
@@ -1147,6 +1159,8 @@ html.pf-modal-open body {
 
     .pf-modal {
         width: 100%;
+        max-width: 100%;
+        max-height: 98vh;
         max-height: 98dvh;
         border-radius: 17px;
     }
@@ -1175,6 +1189,7 @@ html.pf-modal-open body {
         width: 100vw;
         max-width: none;
         height: 100vh;
+        max-height: 100vh;
         height: 100dvh;
         max-height: none;
         border: 0;
@@ -1184,6 +1199,7 @@ html.pf-modal-open body {
 
     .pf-header {
         position: relative;
+        z-index: 2;
         padding:
             calc(12px + env(safe-area-inset-top))
             calc(14px + env(safe-area-inset-right))
@@ -1200,6 +1216,7 @@ html.pf-modal-open body {
     }
 
     .pf-scroll {
+        min-height: 0;
         padding: 11px 10px 16px;
         gap: 10px;
     }
