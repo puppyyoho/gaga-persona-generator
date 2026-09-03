@@ -249,6 +249,10 @@ html.pf-modal-open body {
     background: color-mix(in srgb, var(--pf-bg) 65%, transparent);
 }
 
+.pf-api-card .pf-segmented {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .pf-segment {
     min-height: 44px;
     padding: 9px 12px;
@@ -1149,6 +1153,27 @@ html.pf-modal-open body {
     color: var(--pf-muted);
     font-size: 11.5px;
     line-height: 1.45;
+}
+
+.pf-api-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 10px;
+}
+
+.pf-api-actions + .pf-inline-note {
+    margin-top: 10px;
+}
+
+.pf-inline-note[data-state="success"] {
+    border: 1px solid color-mix(in srgb, #3eaa70 38%, var(--pf-border));
+    color: color-mix(in srgb, #3eaa70 86%, var(--pf-text));
+}
+
+.pf-inline-note[data-state="error"] {
+    border: 1px solid color-mix(in srgb, #d76565 42%, var(--pf-border));
+    color: color-mix(in srgb, #d76565 90%, var(--pf-text));
 }
 
 /* Keep the extension entry readable inside SillyTavern's narrow settings drawer. */

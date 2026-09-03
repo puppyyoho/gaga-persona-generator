@@ -36,11 +36,16 @@ import {
     resolveChatCompletionModel,
     subscribeHostEvents,
 } from './st-compat.js';
+import {
+    buildIndependentApiPayload,
+    hasIndependentApiSettings,
+    normalizeIndependentApiSettings,
+} from './independent-api.js';
 
 const EXTENSION_NAME = 'persona-forge';
 const DISPLAY_NAME = '嘎嘎人设生成器';
 const SETTINGS_KEY = 'personaForge';
-const VERSION = '0.7.11';
+const VERSION = '0.8.0';
 const FAB_ICON_URL = new URL('./icon.png', import.meta.url).href;
 const DEFAULT_FAB_SIZE = 65;
 
@@ -63,6 +68,7 @@ const state = {
     selectedCandidateIndex: 0,
     resultView: 'persona',
     capabilities: null,
+    secretRuntime: null,
 };
 
 function getContext() {
@@ -246,6 +252,8 @@ function ensureSettings() {
         customTargetLength: LENGTH_PRESETS.standard.targetLength,
         sectionSelection: createDefaultSectionSelection(),
         customSectionPresets: [],
+        apiMode: 'tavern',
+        independentApi: normalizeIndependentApiSettings(),
     };
     const current = root[SETTINGS_KEY] && typeof root[SETTINGS_KEY] === 'object'
         ? root[SETTINGS_KEY]
@@ -271,6 +279,8 @@ function ensureSettings() {
         ),
         sectionSelection: mergedSections,
         customSectionPresets: normalizeCustomSectionPresets(current.customSectionPresets),
+        apiMode: current.apiMode === 'independent' ? 'independent' : 'tavern',
+        independentApi: normalizeIndependentApiSettings(current.independentApi),
     };
     // Remove retired settings from older installations.
     delete migrated.includeSummary;
@@ -291,6 +301,178 @@ function ensureSettings() {
 
 function saveSettings() {
     getContext().saveSettingsDebounced?.();
+}
+
+async function getSecretRuntime() {
+    if (state.secretRuntime) return state.secretRuntime;
+    const candidates = ['/scripts/secrets.js'];
+    for (const path of candidates) {
+        try {
+            const runtime = await import(path);
+            if (typeof runtime.writeSecret === 'function') {
+                state.secretRuntime = runtime;
+                return runtime;
+            }
+        } catch (error) {
+            console.warn(`[${DISPLAY_NAME}] Could not load the SillyTavern secret store.`, error);
+        }
+    }
+    return null;
+}
+
+function independentApiConfigFromUi({ persist = true } = {}) {
+    const settings = ensureSettings();
+    const root = state.overlay;
+    const current = normalizeIndependentApiSettings(settings.independentApi);
+    if (root) {
+        current.endpoint = root.querySelector('#pf-independent-api-endpoint')?.value ?? current.endpoint;
+        current.model = root.querySelector('#pf-independent-api-model')?.value ?? current.model;
+        current.maxTokens = root.querySelector('#pf-independent-api-max-tokens')?.value ?? current.maxTokens;
+        current.temperature = root.querySelector('#pf-independent-api-temperature')?.value ?? current.temperature;
+    }
+    settings.independentApi = normalizeIndependentApiSettings(current);
+    if (persist) saveSettings();
+    return settings.independentApi;
+}
+
+function setIndependentApiStatus(message, type = 'info') {
+    const element = state.overlay?.querySelector('#pf-independent-api-status');
+    if (!element) return;
+    element.textContent = message;
+    element.dataset.state = type;
+}
+
+function syncApiConnectionUi() {
+    const root = state.overlay;
+    if (!root) return;
+    const settings = ensureSettings();
+    const independent = settings.apiMode === 'independent';
+    root.querySelectorAll('[data-api-mode]').forEach(button => {
+        const active = button.dataset.apiMode === (independent ? 'independent' : 'tavern');
+        button.classList.toggle('is-active', active);
+        button.setAttribute('aria-checked', String(active));
+    });
+    const fields = root.querySelector('#pf-independent-api-fields');
+    if (fields) fields.hidden = !independent;
+    const note = root.querySelector('#pf-tavern-api-note');
+    if (note) note.hidden = independent;
+    const api = normalizeIndependentApiSettings(settings.independentApi);
+    const values = {
+        '#pf-independent-api-endpoint': api.endpoint,
+        '#pf-independent-api-model': api.model,
+        '#pf-independent-api-max-tokens': api.maxTokens || '',
+        '#pf-independent-api-temperature': String(api.temperature),
+    };
+    for (const [selector, value] of Object.entries(values)) {
+        const input = root.querySelector(selector);
+        if (input && document.activeElement !== input) input.value = value;
+    }
+    if (note) {
+        const context = getContext();
+        note.textContent = `使用酒馆当前选择的 API、模型和连接设置（${getActiveModelInfo(context).label}），不会改变酒馆全局配置。`;
+    }
+    const status = root.querySelector('#pf-independent-api-status');
+    if (status && !status.dataset.state) {
+        status.textContent = api.secretId
+            ? `已保存 API Key（酒馆密钥库） · ${api.model || '未填写模型'}`
+            : '尚未保存 API Key。填写后点击“保存独立 API”。';
+    }
+}
+
+function setApiMode(mode) {
+    const settings = ensureSettings();
+    settings.apiMode = mode === 'independent' ? 'independent' : 'tavern';
+    saveSettings();
+    syncApiConnectionUi();
+    updateGenerationModelLabel();
+}
+
+async function saveIndependentApi() {
+    const settings = ensureSettings();
+    const config = independentApiConfigFromUi({ persist: false });
+    if (!config.endpoint || !config.model) {
+        throw new Error('请先填写 API 地址和模型名称。');
+    }
+    const keyInput = state.overlay?.querySelector('#pf-independent-api-key');
+    const key = String(keyInput?.value || '').trim();
+    if (key) {
+        const runtime = await getSecretRuntime();
+        if (!runtime?.writeSecret) {
+            throw new Error('当前酒馆版本没有可用的密钥库接口，无法安全保存 API Key。');
+        }
+        const secretKey = runtime.SECRET_KEYS?.CUSTOM || 'api_key_custom';
+        const secretId = await runtime.writeSecret(
+            secretKey,
+            key,
+            `${DISPLAY_NAME} · 独立 API`,
+            { allowEmpty: false },
+        );
+        const resolvedId = String(secretId?.id ?? secretId?.secret_id ?? (secretId || '')).trim();
+        if (!resolvedId) throw new Error('酒馆密钥库没有返回有效的 Key 标识。');
+        config.secretId = resolvedId;
+        keyInput.value = '';
+    }
+    if (!config.secretId) throw new Error('请填写 API Key 并保存，或先保存已有 Key。');
+    settings.independentApi = normalizeIndependentApiSettings(config);
+    saveSettings();
+    syncApiConnectionUi();
+    setIndependentApiStatus(`已保存独立 API：${config.model} · API Key 保存在酒馆密钥库`, 'success');
+    notify('success', '独立 API 设置已保存。');
+}
+
+async function clearIndependentApiKey() {
+    const settings = ensureSettings();
+    const config = normalizeIndependentApiSettings(settings.independentApi);
+    if (!config.secretId) {
+        setIndependentApiStatus('当前没有已保存的 API Key。');
+        return;
+    }
+    const runtime = await getSecretRuntime();
+    if (typeof runtime?.deleteSecret !== 'function') {
+        throw new Error('当前酒馆版本没有可用的密钥库删除接口。');
+    }
+    const secretKey = runtime.SECRET_KEYS?.CUSTOM || 'api_key_custom';
+    await runtime.deleteSecret(secretKey, config.secretId);
+    settings.independentApi = normalizeIndependentApiSettings({ ...config, secretId: '' });
+    saveSettings();
+    syncApiConnectionUi();
+    setIndependentApiStatus('已清除独立 API 的 Key。');
+    notify('success', '已清除独立 API Key。');
+}
+
+async function testIndependentApi() {
+    const settings = ensureSettings();
+    const config = independentApiConfigFromUi({ persist: false });
+    if (!config.endpoint || !config.model || !config.secretId) {
+        throw new Error('请先填写地址、模型，并保存 API Key。');
+    }
+    const service = getContext()?.ChatCompletionService;
+    if (typeof service?.sendRequest !== 'function') {
+        throw new Error('当前酒馆版本没有 Chat Completion 请求接口，无法使用独立 API。');
+    }
+    setIndependentApiStatus('正在测试连接…');
+    const payload = buildIndependentApiPayload(config, [
+        { role: 'user', content: '请只回复 OK' },
+    ], { stream: false });
+    payload.max_tokens = 8;
+    const response = await service.sendRequest(payload, true);
+    const text = extractGeneratedTextCompat(getContext(), response)
+        || (typeof response === 'string' ? response : response?.content ?? response?.text ?? '');
+    if (!String(text).trim()) throw new Error('API 已响应，但没有返回可读内容。');
+    setIndependentApiStatus(`连接成功：${config.model} · 已收到测试响应`, 'success');
+    notify('success', `独立 API 连接成功：${config.model}`);
+}
+
+function updateGenerationModelLabel(ctx = getContext()) {
+    const modelLabel = state.overlay?.querySelector('#pf-generation-model');
+    if (!modelLabel) return;
+    const settings = ensureSettings();
+    if (settings.apiMode === 'independent') {
+        const api = normalizeIndependentApiSettings(settings.independentApi);
+        modelLabel.textContent = `独立 API · ${api.model || '未配置模型'}`;
+        return;
+    }
+    modelLabel.textContent = getActiveModelInfo(ctx).label;
 }
 
 function escapeAttribute(value) {
@@ -339,6 +521,50 @@ function createStaticUi() {
                     <div class="pf-book-summary">
                         <span class="pf-label-mini">自动识别到的世界书</span>
                         <div class="pf-chip-wrap" id="pf-active-book-chips"></div>
+                    </div>
+                </section>
+
+                <section class="pf-card pf-api-card">
+                    <div class="pf-section-head">
+                        <div>
+                            <h3>API 连接</h3>
+                            <p id="pf-api-description">默认跟随酒馆当前连接；也可以单独填写 OpenAI 兼容 API。</p>
+                        </div>
+                    </div>
+                    <div class="pf-segmented" role="radiogroup" aria-label="API 连接方式">
+                        <button type="button" class="pf-segment is-active" data-api-mode="tavern" role="radio" aria-checked="true">🔗 跟随酒馆</button>
+                        <button type="button" class="pf-segment" data-api-mode="independent" role="radio" aria-checked="false">🔑 独立 API</button>
+                    </div>
+                    <div class="pf-inline-note" id="pf-tavern-api-note">使用酒馆当前选择的 API、模型和连接设置，不会改变酒馆全局配置。</div>
+                    <div id="pf-independent-api-fields" hidden>
+                        <div class="pf-grid pf-grid-2 pf-top-gap">
+                            <label class="pf-field">
+                                <span>API 地址 <small>OpenAI 兼容接口</small></span>
+                                <input id="pf-independent-api-endpoint" type="url" autocomplete="url" placeholder="https://example.com/v1">
+                            </label>
+                            <label class="pf-field">
+                                <span>模型名称</span>
+                                <input id="pf-independent-api-model" type="text" autocomplete="off" placeholder="例如：claude-3-5-sonnet 或 gpt-4o">
+                            </label>
+                            <label class="pf-field">
+                                <span>最大输出 Token <small>留空则交给 API 默认值</small></span>
+                                <input id="pf-independent-api-max-tokens" type="number" min="1" max="200000" step="1" inputmode="numeric" placeholder="可选">
+                            </label>
+                            <label class="pf-field">
+                                <span>温度 <small>0–2</small></span>
+                                <input id="pf-independent-api-temperature" type="number" min="0" max="2" step="0.1" inputmode="decimal">
+                            </label>
+                        </div>
+                        <label class="pf-field pf-top-gap">
+                            <span>API Key <small>只保存到酒馆密钥库，不写入扩展设置</small></span>
+                            <input id="pf-independent-api-key" type="password" autocomplete="new-password" placeholder="首次使用时填写；已保存后可留空">
+                        </label>
+                        <div class="pf-api-actions">
+                            <button type="button" class="pf-mini-button" id="pf-save-independent-api">保存独立 API</button>
+                            <button type="button" class="pf-mini-button" id="pf-test-independent-api">测试连接</button>
+                            <button type="button" class="pf-mini-button" id="pf-clear-independent-api-key">清除已保存 Key</button>
+                        </div>
+                        <div class="pf-inline-note" id="pf-independent-api-status">尚未配置独立 API。</div>
                     </div>
                 </section>
 
@@ -1138,6 +1364,7 @@ function syncControlsFromSettings() {
     updateSpeciesDetailVisibility();
     updateLengthVisibility();
     setOutputFormat(settings.lastOutputFormat || 'natural', false);
+    syncApiConnectionUi();
 }
 
 function bindUiEvents() {
@@ -1153,6 +1380,52 @@ function bindUiEvents() {
 
     root.querySelectorAll('.pf-segment[data-mode]').forEach(button => {
         button.addEventListener('click', () => setMode(button.dataset.mode));
+    });
+    root.querySelectorAll('[data-api-mode]').forEach(button => {
+        button.addEventListener('click', () => setApiMode(button.dataset.apiMode));
+    });
+    root.querySelector('#pf-save-independent-api')?.addEventListener('click', async event => {
+        const button = event.currentTarget;
+        button.disabled = true;
+        try {
+            await saveIndependentApi();
+        } catch (error) {
+            setIndependentApiStatus(readableError(error), 'error');
+            notify('error', '保存独立 API 失败：' + readableError(error));
+        } finally {
+            button.disabled = false;
+        }
+    });
+    root.querySelector('#pf-test-independent-api')?.addEventListener('click', async event => {
+        const button = event.currentTarget;
+        button.disabled = true;
+        try {
+            await testIndependentApi();
+        } catch (error) {
+            setIndependentApiStatus(readableError(error), 'error');
+            notify('error', '独立 API 测试失败：' + readableError(error));
+        } finally {
+            button.disabled = false;
+        }
+    });
+    root.querySelector('#pf-clear-independent-api-key')?.addEventListener('click', async event => {
+        const button = event.currentTarget;
+        button.disabled = true;
+        try {
+            await clearIndependentApiKey();
+        } catch (error) {
+            setIndependentApiStatus(readableError(error), 'error');
+            notify('error', '清除独立 API Key 失败：' + readableError(error));
+        } finally {
+            button.disabled = false;
+        }
+    });
+    root.querySelectorAll('#pf-independent-api-endpoint, #pf-independent-api-model, #pf-independent-api-max-tokens, #pf-independent-api-temperature').forEach(input => {
+        input.addEventListener('change', () => {
+            independentApiConfigFromUi();
+            syncApiConnectionUi();
+            updateGenerationModelLabel();
+        });
     });
 
     root.querySelector('#pf-style')?.addEventListener('change', () => {
@@ -1404,8 +1677,8 @@ async function refreshContextUi(force = false) {
     state.overlay.querySelector('#pf-context-line').textContent = character
         ? `已读取当前角色 · ${state.activeWorldNames.length} 个绑定/启用世界书${state.embeddedBook ? ' · 含卡内世界书' : ''}`
         : '当前未选择单角色；仍可使用全局与聊天世界书生成。';
-    const modelLabel = state.overlay.querySelector('#pf-generation-model');
-    if (modelLabel) modelLabel.textContent = getActiveModelInfo(ctx).label;
+    updateGenerationModelLabel(ctx);
+    syncApiConnectionUi();
 
     updateGreetingReferenceUi(character);
 
@@ -1793,6 +2066,18 @@ function getCurrentApiStreaming(ctx) {
     return null;
 }
 
+function getIndependentApiStreaming(ctx) {
+    const service = ctx?.ChatCompletionService;
+    if (typeof service?.sendRequest !== 'function') return null;
+    const settings = normalizeIndependentApiSettings(ensureSettings().independentApi);
+    return {
+        api: 'independent-chat',
+        service,
+        settings,
+        label: ['独立 API', settings.model || '未配置模型'].join(' · '),
+    };
+}
+
 function cloneSettings(settings) {
     if (!settings || typeof settings !== 'object') return {};
     try {
@@ -1894,17 +2179,28 @@ function waitForBrowserPaint() {
 }
 
 function readableError(error) {
-    const cause = error?.cause;
-    const direct = cause?.message || error?.message;
-    if (direct) return String(direct);
-    if (error && typeof error === 'object') {
-        const nested = error.error?.message
-            || error.error
-            || error.detail?.error?.message
-            || error.detail
-            || error.response;
-        if (nested) return typeof nested === 'string' ? nested : JSON.stringify(nested);
-    }
+    const messages = [];
+    const seen = new Set();
+    const visit = value => {
+        if (value == null || seen.has(value)) return;
+        if (typeof value === 'string') {
+            if (value.trim()) messages.push(value.trim());
+            return;
+        }
+        if (typeof value !== 'object') return;
+        seen.add(value);
+        if (typeof value.message === 'string') messages.push(value.message.trim());
+        visit(value.cause);
+        visit(value.error);
+        visit(value.detail);
+        visit(value.response);
+        visit(value.data);
+    };
+    visit(error);
+    const generic = message => /^(api request failed|request failed|网络请求失败)$/i.test(message.trim());
+    const meaningful = messages.find(message => message && !generic(message));
+    if (meaningful) return meaningful;
+    if (messages[0]) return messages[0];
     return String(error || '未知错误');
 }
 
@@ -1926,6 +2222,31 @@ function getResponseTokenBudget(ctx, targetLength) {
 
 async function generateWithCurrentConnection(ctx, { systemPrompt, prompt, maxTokens }) {
     const liveContext = getContext();
+    if (ensureSettings().apiMode === 'independent') {
+        const config = independentApiConfigFromUi({ persist: true });
+        if (!hasIndependentApiSettings(config)) {
+            throw new Error('独立 API 尚未配置完整，请填写地址、模型并保存 API Key。');
+        }
+        const service = liveContext?.ChatCompletionService;
+        if (typeof service?.sendRequest !== 'function') {
+            throw new Error('当前酒馆版本没有 Chat Completion 请求接口，无法使用独立 API。');
+        }
+        const messages = [
+            ...(systemPrompt ? [{ role: 'system', content: systemPrompt }] : []),
+            { role: 'user', content: prompt },
+        ];
+        const payload = buildIndependentApiPayload(config, messages, { stream: false });
+        const response = await service.sendRequest(payload, true);
+        let text = extractGeneratedTextCompat(liveContext, response);
+        if (!text) text = typeof response === 'string' ? response : (response?.content ?? response?.text ?? '');
+        if (!String(text).trim()) {
+            const reasoning = extractReasoningCompat(response);
+            throw new Error(reasoning.trim()
+                ? `${config.model} · 模型只返回了思考内容，没有最终人设正文。请降低思考强度或填写最大输出 Token 后重试。`
+                : `${config.model} · 模型返回了空内容，请检查独立 API 设置与内容过滤。`);
+        }
+        return { text: String(text), source: `独立 API · ${config.model}` };
+    }
     const responseLength = getResponseTokenBudget(liveContext, maxTokens);
     const hasNativeGeneration = typeof liveContext?.generateRawData === 'function'
         || typeof liveContext?.generateRaw === 'function'
@@ -1990,8 +2311,11 @@ async function generateRawWithStreaming(ctx, { systemPrompt, prompt, maxTokens, 
     // SillyTavern is actually using. Connection Manager is only a compatibility
     // fallback when the host does not expose its current Chat/Text stream service.
     const liveContext = getContext();
-    const currentApi = getCurrentApiStreaming(liveContext);
-    const connection = currentApi ? null : getConnectionManagerStreaming(liveContext);
+    const independent = ensureSettings().apiMode === 'independent';
+    const currentApi = independent
+        ? getIndependentApiStreaming(liveContext)
+        : getCurrentApiStreaming(liveContext);
+    const connection = independent || currentApi ? null : getConnectionManagerStreaming(liveContext);
     if (!connection && !currentApi) return { supported: false, streamed: false, text: '' };
 
     const controller = new AbortController();
@@ -2006,7 +2330,18 @@ async function generateRawWithStreaming(ctx, { systemPrompt, prompt, maxTokens, 
         const connectionMaxTokens = getResponseTokenBudget(liveContext, maxTokens);
         let response;
 
-        if (connection) {
+        if (currentApi?.api === 'independent-chat') {
+            const config = independentApiConfigFromUi({ persist: true });
+            if (!hasIndependentApiSettings(config)) {
+                throw new Error('独立 API 尚未配置完整，请填写地址、模型并保存 API Key。');
+            }
+            const messages = [
+                ...(systemPrompt ? [{ role: 'system', content: systemPrompt }] : []),
+                { role: 'user', content: prompt },
+            ];
+            const payload = buildIndependentApiPayload(config, messages, { stream: true });
+            response = await currentApi.service.sendRequest(payload, true, controller.signal);
+        } else if (connection) {
             const messages = [
                 ...(systemPrompt ? [{ role: 'system', content: systemPrompt }] : []),
                 { role: 'user', content: prompt },
@@ -2142,7 +2477,9 @@ async function generateRawWithStreaming(ctx, { systemPrompt, prompt, maxTokens, 
 async function generatePersona() {
     if (state.generating) return;
     const ctx = getContext();
-    if (!state.capabilities?.generation) {
+    const independentReady = ensureSettings().apiMode === 'independent'
+        && typeof ctx?.ChatCompletionService?.sendRequest === 'function';
+    if (!state.capabilities?.generation && !independentReady) {
         notify('error', '当前版本未提供可用的人设生成接口。');
         return;
     }
@@ -2282,7 +2619,9 @@ async function rerollNames() {
     }
 
     const ctx = getContext();
-    if (!state.capabilities?.generation) return;
+    const independentReady = ensureSettings().apiMode === 'independent'
+        && typeof ctx?.ChatCompletionService?.sendRequest === 'function';
+    if (!state.capabilities?.generation && !independentReady) return;
     const count = Number(state.structuredResult.options?.nameCount) || Number(ensureSettings().nameCount) || 5;
     const generationId = ++state.generationEpoch;
     state.generating = true;
