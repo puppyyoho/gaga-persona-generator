@@ -1173,6 +1173,10 @@ html.pf-modal-open body {
     white-space: nowrap;
 }
 
+.pf-api-model-manual {
+    margin-top: 8px;
+}
+
 .pf-api-actions + .pf-inline-note {
     margin-top: 10px;
 }

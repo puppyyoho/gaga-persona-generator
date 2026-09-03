@@ -29,7 +29,7 @@ export function normalizeIndependentApiSettings(value) {
     const maxTokens = Number(input.maxTokens);
     const temperature = Number(input.temperature);
     const modelOptions = Array.isArray(input.modelOptions)
-        ? input.modelOptions.map(item => String(item ?? '').trim()).filter(Boolean).slice(0, 500)
+        ? input.modelOptions.map(item => String(item ?? '').trim()).filter(Boolean)
         : [];
     return {
         endpoint: normalizeIndependentApiUrl(input.endpoint),
@@ -66,16 +66,64 @@ export function buildIndependentApiPayload(config, messages, { stream = false } 
 }
 
 export function parseIndependentApiModels(data) {
-    const raw = Array.isArray(data)
-        ? data
-        : data?.data ?? data?.models ?? data?.result?.data ?? data?.result?.models ?? [];
-    if (!Array.isArray(raw)) return [];
-    const models = raw.map(item => {
-        if (typeof item === 'string') return item;
-        if (!item || typeof item !== 'object') return '';
-        return item.id ?? item.model ?? item.name ?? item.value ?? '';
-    }).map(item => String(item ?? '').trim()).filter(Boolean);
-    return [...new Set(models)].slice(0, 500);
+    // OpenAI-compatible APIs normally return `{ data: [{ id: ... }] }`, but
+    // gateways also commonly use `{ models: [...] }`, nested `result` objects,
+    // or a map keyed by model ID. Walk all of those shapes instead of keeping
+    // only the first entry/first known container.
+    const models = [];
+    const modelSet = new Set();
+    const seen = new WeakSet();
+    const containerKeys = new Set([
+        'data', 'models', 'model_list', 'modelList', 'items', 'results', 'result', 'values',
+    ]);
+    const identityKeys = ['id', 'model', 'name', 'value', 'slug'];
+    const ignoredMapKeys = new Set([
+        'data', 'models', 'model_list', 'modelList', 'items', 'results', 'result', 'values',
+        'object', 'created', 'owned_by', 'permission', 'root', 'parent', 'error', 'message',
+    ]);
+
+    const add = value => {
+        const model = String(value ?? '').trim();
+        if (model && !modelSet.has(model)) {
+            modelSet.add(model);
+            models.push(model);
+        }
+    };
+
+    const visit = (node, { allowString = false, allowMapKeys = false } = {}) => {
+        if (typeof node === 'string') {
+            if (allowString) add(node);
+            return;
+        }
+        if (Array.isArray(node)) {
+            for (const item of node) visit(item, { allowString: true, allowMapKeys: false });
+            return;
+        }
+        if (!node || typeof node !== 'object') return;
+        if (seen.has(node)) return;
+        seen.add(node);
+
+        let hasIdentity = false;
+        for (const key of identityKeys) {
+            if (node[key] !== undefined && node[key] !== null) {
+                hasIdentity = true;
+                add(node[key]);
+                break;
+            }
+        }
+        for (const [key, value] of Object.entries(node)) {
+            if (containerKeys.has(key)) {
+                visit(value, { allowString: true, allowMapKeys: key === 'data' || key === 'models' || key === 'model_list' || key === 'modelList' });
+            } else if (allowMapKeys && !hasIdentity && !ignoredMapKeys.has(key)) {
+                // Some providers return `{ models: { "provider/model": {...} } }`.
+                add(key);
+                visit(value, { allowString: false, allowMapKeys: false });
+            }
+        }
+    };
+
+    visit(data, { allowString: true, allowMapKeys: false });
+    return models;
 }
 
 export function buildIndependentApiModelsUrl(endpoint) {

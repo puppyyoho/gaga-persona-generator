@@ -47,7 +47,7 @@ import {
 const EXTENSION_NAME = 'persona-forge';
 const DISPLAY_NAME = '嘎嘎人设生成器';
 const SETTINGS_KEY = 'personaForge';
-const VERSION = '0.8.0';
+const VERSION = '0.8.1';
 const FAB_ICON_URL = new URL('./icon.png', import.meta.url).href;
 const DEFAULT_FAB_SIZE = 65;
 
@@ -331,7 +331,13 @@ function independentApiConfigFromUi({ persist = true } = {}) {
     const previousEndpoint = current.endpoint;
     if (root) {
         current.endpoint = root.querySelector('#pf-independent-api-endpoint')?.value ?? current.endpoint;
-        current.model = root.querySelector('#pf-independent-api-model')?.value ?? current.model;
+        const modelSelect = root.querySelector('#pf-independent-api-model');
+        const modelManual = root.querySelector('#pf-independent-api-model-manual');
+        if (modelSelect || modelManual) {
+            const selectedModel = String(modelSelect?.value ?? '').trim();
+            const manualModel = String(modelManual?.value ?? '').trim();
+            current.model = manualModel || selectedModel;
+        }
         current.maxTokens = root.querySelector('#pf-independent-api-max-tokens')?.value ?? current.maxTokens;
         current.temperature = root.querySelector('#pf-independent-api-temperature')?.value ?? current.temperature;
     }
@@ -366,18 +372,30 @@ function syncApiConnectionUi() {
     const note = root.querySelector('#pf-tavern-api-note');
     if (note) note.hidden = independent;
     const api = normalizeIndependentApiSettings(settings.independentApi);
-    const modelList = root.querySelector('#pf-independent-api-model-list');
-    if (modelList) {
-        modelList.replaceChildren();
-        for (const model of api.modelOptions) {
+    const modelSelect = root.querySelector('#pf-independent-api-model');
+    if (modelSelect) {
+        modelSelect.replaceChildren();
+        if (api.modelOptions.length) {
+            for (const model of api.modelOptions) {
+                const option = document.createElement('option');
+                option.value = model;
+                option.textContent = model;
+                option.selected = model === api.model;
+                modelSelect.appendChild(option);
+            }
+            if (!api.modelOptions.includes(api.model)) modelSelect.value = '';
+        } else {
             const option = document.createElement('option');
-            option.value = model;
-            modelList.appendChild(option);
+            option.value = '';
+            option.textContent = '先点击“获取模型列表”';
+            option.disabled = true;
+            option.selected = true;
+            modelSelect.appendChild(option);
         }
     }
     const values = {
         '#pf-independent-api-endpoint': api.endpoint,
-        '#pf-independent-api-model': api.model,
+        '#pf-independent-api-model-manual': api.modelOptions.includes(api.model) ? '' : api.model,
         '#pf-independent-api-max-tokens': api.maxTokens || '',
         '#pf-independent-api-temperature': String(api.temperature),
     };
@@ -632,12 +650,14 @@ function createStaticUi() {
                                 <input id="pf-independent-api-endpoint" type="url" autocomplete="url" placeholder="https://example.com/v1">
                             </label>
                             <label class="pf-field">
-                                <span>模型名称 <small>从独立 API 获取，可手动兜底</small></span>
+                                <span>模型列表 <small>获取后可选择全部模型</small></span>
                                 <div class="pf-api-model-row">
-                                    <input id="pf-independent-api-model" list="pf-independent-api-model-list" type="text" autocomplete="off" placeholder="先点击“获取模型列表”">
+                                    <select id="pf-independent-api-model" aria-label="独立 API 模型列表">
+                                        <option value="" disabled selected>先点击“获取模型列表”</option>
+                                    </select>
                                     <button type="button" class="pf-mini-button" id="pf-load-independent-api-models">获取模型列表</button>
                                 </div>
-                                <datalist id="pf-independent-api-model-list"></datalist>
+                                <input id="pf-independent-api-model-manual" class="pf-api-model-manual" type="text" autocomplete="off" placeholder="列表不支持时可手动填写模型 ID（可选）">
                             </label>
                             <label class="pf-field">
                                 <span>最大输出 Token <small>留空则交给 API 默认值</small></span>
@@ -1525,8 +1545,14 @@ function bindUiEvents() {
             button.disabled = false;
         }
     });
-    root.querySelectorAll('#pf-independent-api-endpoint, #pf-independent-api-model, #pf-independent-api-max-tokens, #pf-independent-api-temperature').forEach(input => {
-        input.addEventListener('change', () => {
+    root.querySelectorAll('#pf-independent-api-endpoint, #pf-independent-api-model, #pf-independent-api-model-manual, #pf-independent-api-max-tokens, #pf-independent-api-temperature').forEach(input => {
+        input.addEventListener('change', event => {
+            if (event.currentTarget.id === 'pf-independent-api-model') {
+                // Choosing an entry from the fetched list should override a
+                // previous manual fallback value.
+                const manual = root.querySelector('#pf-independent-api-model-manual');
+                if (manual) manual.value = '';
+            }
             independentApiConfigFromUi();
             syncApiConnectionUi();
             updateGenerationModelLabel();
