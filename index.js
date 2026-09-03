@@ -38,7 +38,7 @@ import {
 const EXTENSION_NAME = 'persona-forge';
 const DISPLAY_NAME = '嘎嘎人设生成器';
 const SETTINGS_KEY = 'personaForge';
-const VERSION = '0.7.6';
+const VERSION = '0.7.7';
 const FAB_ICON_URL = new URL('./icon.png', import.meta.url).href;
 const DEFAULT_FAB_SIZE = 65;
 const MAX_LORE_CHARS_DEFAULT = 52000;
@@ -47,7 +47,6 @@ const state = {
     overlay: null,
     panel: null,
     settingsPanel: null,
-    floatingButton: null,
     worldInfoRuntime: null,
     floatingResizeBound: false,
     allWorldNames: [],
@@ -301,12 +300,7 @@ function escapeAttribute(value) {
 }
 
 function createStaticUi() {
-    const existing = document.getElementById('pf-overlay');
-    if (existing && existing === state.overlay) return;
-    if (existing) {
-        existing.remove();
-        document.documentElement.classList.remove('pf-modal-open');
-    }
+    if (document.getElementById('pf-overlay')) return;
 
     const overlay = document.createElement('div');
     overlay.id = 'pf-overlay';
@@ -566,9 +560,7 @@ function createStaticUi() {
 }
 
 function createSettingsUi() {
-    const existing = document.getElementById('pf-settings');
-    if (existing && existing === state.settingsPanel) return;
-    existing?.remove();
+    if (document.getElementById('pf-settings')) return;
     const container = document.querySelector('#extensions_settings2') || document.querySelector('#extensions_settings');
     if (!container) return;
 
@@ -611,7 +603,7 @@ function createSettingsUi() {
     container.appendChild(block);
     state.settingsPanel = block;
 
-    block.querySelector('#pf-open-settings')?.addEventListener('click', openPanelSafely);
+    block.querySelector('#pf-open-settings')?.addEventListener('click', openPanel);
     block.querySelector('#pf-show-fab')?.addEventListener('change', event => {
         settings.showFloatingButton = Boolean(event.target.checked);
         saveSettings();
@@ -734,7 +726,6 @@ function bindFloatingDrag(button) {
     if (button.dataset.dragBound === 'true') return;
     button.dataset.dragBound = 'true';
     let drag = null;
-    let suppressClickUntil = 0;
 
     button.addEventListener('pointerdown', event => {
         if (event.pointerType === 'mouse' && event.button !== 0) return;
@@ -747,67 +738,46 @@ function bindFloatingDrag(button) {
             top: rect.top,
             moved: false,
         };
+        setFloatingPosition(button, rect.left, rect.top);
         button.classList.add('is-dragging');
-        try {
-            button.setPointerCapture?.(event.pointerId);
-        } catch (error) {
-            // Some Android WebViews expose pointer capture but throw when it
-            // is used on a fixed-position element. A normal tap still works.
-            console.debug(`[${DISPLAY_NAME}] Pointer capture unavailable.`, error);
-        }
+        button.setPointerCapture?.(event.pointerId);
+        event.preventDefault();
     });
 
     button.addEventListener('pointermove', event => {
         if (!drag || event.pointerId !== drag.pointerId) return;
         const deltaX = event.clientX - drag.startX;
         const deltaY = event.clientY - drag.startY;
-        if (Math.hypot(deltaX, deltaY) > 10) drag.moved = true;
-        if (!drag.moved) return;
+        if (Math.hypot(deltaX, deltaY) > 4) drag.moved = true;
         setFloatingPosition(button, drag.left + deltaX, drag.top + deltaY);
-        if (event.cancelable) event.preventDefault();
+        event.preventDefault();
     });
 
     const finishDrag = event => {
         if (!drag || event.pointerId !== drag.pointerId) return;
-        const cancelled = event.type === 'pointercancel';
-        const didMove = drag.moved;
-        const wasTap = !cancelled && !didMove;
-        try {
-            if (button.hasPointerCapture?.(event.pointerId)) button.releasePointerCapture(event.pointerId);
-        } catch (error) {
-            console.debug(`[${DISPLAY_NAME}] Could not release pointer capture.`, error);
-        }
+        if (button.hasPointerCapture?.(event.pointerId)) button.releasePointerCapture(event.pointerId);
         button.classList.remove('is-dragging');
-        if (didMove) {
+        if (drag.moved) {
+            button.dataset.dragged = 'true';
             setFloatingPosition(button, Number.parseFloat(button.style.left), Number.parseFloat(button.style.top), true);
         }
         drag = null;
-        // Open from pointerup itself. Android WebViews do not consistently
-        // synthesize a click after pointer capture or touch-action: none.
-        // The click handler remains as a keyboard and old-WebView fallback.
-        // An unmoved pointercancel may still be followed by a valid fallback
-        // click on older WebViews, so only suppress after a completed gesture
-        // or a real drag.
-        if (!cancelled || didMove) suppressClickUntil = Date.now() + 700;
-        if (wasTap) openPanelSafely();
     };
     button.addEventListener('pointerup', finishDrag);
     button.addEventListener('pointercancel', finishDrag);
     button.addEventListener('click', event => {
-        if (Date.now() < suppressClickUntil) {
+        if (button.dataset.dragged === 'true') {
+            button.dataset.dragged = '';
             event.preventDefault();
             return;
         }
-        openPanelSafely();
+        openPanel();
     });
 }
 
 function setFloatingSize(button, value) {
     const size = clampFloatingSize(value);
     button.style.setProperty('--pf-fab-size', `${size}px`);
-    // Keep an inline size for older WebViews that ignore CSS custom properties.
-    button.style.width = `${size}px`;
-    button.style.height = `${size}px`;
     return size;
 }
 
@@ -823,15 +793,7 @@ function updateFloatingButton() {
     // Respect the user's visibility switch on every viewport.
     if (!settings.showFloatingButton) {
         button?.remove();
-        state.floatingButton = null;
         return;
-    }
-
-    // Extension updates can leave the previous module's button in the DOM.
-    // Replace it so this runtime owns the listeners and state references.
-    if (button && button !== state.floatingButton) {
-        button.remove();
-        button = null;
     }
 
     if (!button) {
@@ -843,7 +805,6 @@ function updateFloatingButton() {
         button.setAttribute('aria-label', `打开${DISPLAY_NAME}（可拖动）`);
         button.innerHTML = `<img class="pf-fab-icon" src="${FAB_ICON_URL}" alt="" aria-hidden="true" draggable="false">`;
         document.body.appendChild(button);
-        state.floatingButton = button;
         bindFloatingDrag(button);
     }
     setFloatingSize(button, settings.floatingSize);
@@ -1390,16 +1351,9 @@ function currentMode() {
 
 async function openPanel() {
     createStaticUi();
-    const overlay = state.overlay;
+    await refreshContextUi(false);
+
     const settings = ensureSettings();
-
-    // Show the shell before reading host data. Older Tavern/WebView builds
-    // can fail or stall while enumerating world books; the close button must
-    // remain available even when that refresh cannot complete.
-    overlay.classList.add('is-open');
-    overlay.setAttribute('aria-hidden', 'false');
-    document.documentElement.classList.add('pf-modal-open');
-
     setMode(settings.lastMode || 'random');
     syncControlsFromSettings();
     renderSectionOptions();
@@ -1417,36 +1371,10 @@ async function openPanel() {
         if (saved) setResult(saved, '上次生成结果');
     }
 
-    const closeButton = overlay.querySelector('#pf-close');
-    try {
-        closeButton?.focus({ preventScroll: true });
-    } catch {
-        closeButton?.focus();
-    }
-
-    try {
-        await refreshContextUi(false);
-    } catch (error) {
-        console.warn(`[${DISPLAY_NAME}] Could not refresh context while opening panel.`, error);
-        const contextLine = overlay.querySelector('#pf-context-line');
-        if (contextLine) contextLine.textContent = '面板已打开，但角色或世界书读取失败；可稍后点击“刷新识别”。';
-        notify('warning', '面板已打开，但当前角色与世界书读取失败。');
-    }
-}
-
-function openPanelSafely() {
-    try {
-        const opening = openPanel();
-        opening?.catch?.(reportPanelOpenError);
-    } catch (error) {
-        reportPanelOpenError(error);
-    }
-}
-
-function reportPanelOpenError(error) {
-    console.error(`[${DISPLAY_NAME}] Could not open panel.`, error);
-    const detail = String(error?.message || error || '未知错误');
-    notify('error', `打开失败：${detail}`);
+    state.overlay.classList.add('is-open');
+    state.overlay.setAttribute('aria-hidden', 'false');
+    document.documentElement.classList.add('pf-modal-open');
+    state.overlay.querySelector('#pf-close')?.focus({ preventScroll: true });
 }
 
 function closePanel() {
@@ -2878,16 +2806,6 @@ function bindContextEvents() {
 
 export async function init() {
     try {
-        // A hot extension update does not always reload the whole Tavern page.
-        // Remove UI owned by an older module instance before creating this one.
-        const staleOverlay = document.getElementById('pf-overlay');
-        const staleSettings = document.getElementById('pf-settings');
-        const staleFloatingButton = document.getElementById('pf-fab');
-        if (staleOverlay && staleOverlay !== state.overlay) staleOverlay.remove();
-        if (staleSettings && staleSettings !== state.settingsPanel) staleSettings.remove();
-        if (staleFloatingButton && staleFloatingButton !== state.floatingButton) staleFloatingButton.remove();
-        document.documentElement.classList.remove('pf-modal-open');
-
         await initializeHostCompatibility();
         state.capabilities = detectHostCapabilities(getContext());
         createStaticUi();
