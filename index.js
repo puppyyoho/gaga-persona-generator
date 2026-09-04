@@ -58,7 +58,7 @@ import {
 const EXTENSION_NAME = 'persona-forge';
 const DISPLAY_NAME = '嘎嘎人设生成器';
 const SETTINGS_KEY = 'personaForge';
-const VERSION = '0.10.7';
+const VERSION = '0.10.8';
 const FAB_ICON_URL = new URL('./icon.png', import.meta.url).href;
 const DEFAULT_FAB_SIZE = 65;
 const WORLD_ENTRY_PAGE_SIZE = 120;
@@ -2234,9 +2234,16 @@ async function resolveWorldInfoAliases(name, ctx = getContext(), runtime = state
     const wanted = comparableWorldInfoName(name);
     const aliases = unique([name, String(name ?? '').replace(/\.json$/i, '')]);
     if (!wanted) return aliases;
-    aliases.push(...normalizeArray(runtime.world_names));
-    aliases.push(...normalizeArray(runtime.selected_world_info));
-    aliases.push(...normalizeArray(runtime.world_info?.globalSelect));
+    const addMatchingAliases = values => {
+        for (const value of normalizeArray(values)) {
+            if (comparableWorldInfoName(value) === wanted) aliases.push(value);
+        }
+    };
+    // Only use runtime identifiers that resolve to the requested book. Never
+    // iterate over every worldbook and accept the first non-empty response.
+    addMatchingAliases(runtime.world_names);
+    addMatchingAliases(runtime.selected_world_info);
+    addMatchingAliases(runtime.world_info?.globalSelect);
     try {
         const records = await fetchWorldInfoList(ctx);
         for (const record of records) {
