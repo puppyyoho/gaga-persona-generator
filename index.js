@@ -46,19 +46,27 @@ import {
 import {
     WORLD_ENTRY_MODE_ALL,
     WORLD_ENTRY_MODE_CUSTOM,
+    canonicalWorldInfoName,
     compactWorldEntrySelection,
+    comparableWorldInfoName,
+    displayWorldInfoName,
     embeddedBookSourceKey,
     extractWorldBookEntries,
+    migrateWorldEntrySelectionKeys,
+    normalizeWorldInfoIds,
     normalizeWorldBookPayload,
     normalizeWorldEntrySelections,
+    preferredWorldInfoId,
     selectedWorldEntries,
+    uniqueWorldInfoIds,
     worldBookSourceKey,
+    worldInfoRecordAliases,
 } from './worldbook-selection.js';
 
 const EXTENSION_NAME = 'persona-forge';
 const DISPLAY_NAME = '嘎嘎人设生成器';
 const SETTINGS_KEY = 'personaForge';
-const VERSION = '0.10.9';
+const VERSION = '0.10.10';
 const FAB_ICON_URL = new URL('./icon.png', import.meta.url).href;
 const DEFAULT_FAB_SIZE = 65;
 const WORLD_ENTRY_PAGE_SIZE = 120;
@@ -193,53 +201,18 @@ function resolveCharacterLoreMatches(character, charLore) {
     return matched;
 }
 
-function preferredWorldInfoId(record) {
-    if (typeof record === 'string') return record.trim();
-    if (!record || typeof record !== 'object') return '';
-    return String(
-        record.file_id
-        ?? record.fileId
-        ?? record.filename
-        ?? record.file
-        ?? record.id
-        ?? record.value
-        ?? record.name
-        ?? '',
-    ).trim();
-}
-
-function worldInfoRecordMatches(record, value) {
-    const wanted = comparableWorldInfoName(value);
-    if (!wanted) return false;
-    return worldInfoRecordAliases(record)
-        .some(alias => comparableWorldInfoName(alias) === wanted);
-}
-
-function canonicalWorldInfoName(value, records = [], knownNames = []) {
-    const raw = String(value ?? '').trim();
-    if (!raw) return '';
-    const exactRecord = records.find(record => worldInfoRecordAliases(record).some(alias => alias === raw));
-    if (exactRecord) return preferredWorldInfoId(exactRecord) || raw;
-    const matchingRecords = records.filter(record => worldInfoRecordMatches(record, raw));
-    if (matchingRecords.length === 1) return preferredWorldInfoId(matchingRecords[0]) || raw;
-    const exactKnown = knownNames.find(name => name === raw);
-    if (exactKnown) return exactKnown;
-    const matchingKnown = knownNames.filter(name => comparableWorldInfoName(name) === comparableWorldInfoName(raw));
-    return matchingKnown.length === 1 ? matchingKnown[0] : raw;
-}
-
 async function detectWorldBooks() {
     const ctx = getContext();
     const character = getCurrentCharacter(ctx);
     const runtime = await getWorldInfoRuntime();
 
     let allWorldNames = typeof ctx.getWorldInfoNames === 'function'
-        ? normalizeArray(ctx.getWorldInfoNames())
-        : normalizeArray(runtime.world_names);
+        ? normalizeWorldInfoIds(ctx.getWorldInfoNames())
+        : normalizeWorldInfoIds(runtime.world_names);
     let worldRecords = [];
     try {
         worldRecords = await fetchWorldInfoList(ctx);
-        const listedIds = unique(worldRecords.map(preferredWorldInfoId).filter(Boolean));
+        const listedIds = uniqueWorldInfoIds(worldRecords.map(preferredWorldInfoId));
         if (listedIds.length) allWorldNames = listedIds;
     } catch (error) {
         console.warn(`[${DISPLAY_NAME}] Could not refresh the worldbook file list.`, error);
@@ -248,8 +221,8 @@ async function detectWorldBooks() {
     const active = [];
 
     // 1) Global World Info selected in SillyTavern.
-    active.push(...normalizeArray(runtime.selected_world_info));
-    active.push(...normalizeArray(runtime.world_info?.globalSelect));
+    active.push(...normalizeWorldInfoIds(runtime.selected_world_info));
+    active.push(...normalizeWorldInfoIds(runtime.world_info?.globalSelect));
 
     // 2) Character primary lorebook.
     active.push(getCharacterPrimaryWorld(character));
@@ -258,26 +231,37 @@ async function detectWorldBooks() {
     active.push(...resolveCharacterLoreMatches(character, runtime.world_info?.charLore));
 
     // 4) Current chat lorebook.
-    active.push(...normalizeArray(ctx.chatMetadata?.world_info));
+    active.push(...normalizeWorldInfoIds(ctx.chatMetadata?.world_info));
 
     // Current Persona lorebooks are detected but intentionally not selected by default.
     // This prevents the active User identity from contaminating a newly generated Persona.
-    const personaWorlds = normalizeArray(ctx.powerUserSettings?.persona_description_lorebook);
+    const personaWorlds = normalizeWorldInfoIds(ctx.powerUserSettings?.persona_description_lorebook);
 
-    const knownWorldNames = unique(allWorldNames);
+    const knownWorldNames = uniqueWorldInfoIds(allWorldNames);
     const canonicalize = value => canonicalWorldInfoName(value, worldRecords, knownWorldNames);
-    const rawActiveWorldNames = unique(active);
-    const rawPersonaWorldNames = unique(personaWorlds);
+    const rawActiveWorldNames = uniqueWorldInfoIds(active);
+    const rawPersonaWorldNames = uniqueWorldInfoIds(personaWorlds);
     state.worldInfoLabels = new Map([
-        ...rawActiveWorldNames.map(name => [canonicalize(name), name]),
-        ...rawPersonaWorldNames.map(name => [canonicalize(name), name]),
+        ...worldRecords.map(record => [
+            preferredWorldInfoId(record),
+            displayWorldInfoName(record?.name ?? preferredWorldInfoId(record)),
+        ]),
+        ...rawActiveWorldNames.map(name => [canonicalize(name), displayWorldInfoName(name)]),
+        ...rawPersonaWorldNames.map(name => [canonicalize(name), displayWorldInfoName(name)]),
     ]);
     state.allWorldNames = knownWorldNames;
-    state.activeWorldNames = unique(rawActiveWorldNames.map(canonicalize))
+    state.activeWorldNames = uniqueWorldInfoIds(rawActiveWorldNames.map(canonicalize))
         .filter(name => state.allWorldNames.length === 0 || state.allWorldNames.includes(name));
-    state.personaWorldNames = unique(rawPersonaWorldNames.map(canonicalize))
+    state.personaWorldNames = uniqueWorldInfoIds(rawPersonaWorldNames.map(canonicalize))
         .filter(name => state.allWorldNames.length === 0 || state.allWorldNames.includes(name));
     state.embeddedBook = getEmbeddedCharacterBook(character);
+
+    const settings = ensureSettings();
+    const migratedSelections = migrateWorldEntrySelectionKeys(settings.worldEntrySelections, knownWorldNames);
+    if (migratedSelections.changed) {
+        settings.worldEntrySelections = migratedSelections.selections;
+        saveSettings();
+    }
 
     // On first context load, default to active books. Preserve manual user selection afterward.
     const signature = JSON.stringify({
@@ -290,7 +274,7 @@ async function detectWorldBooks() {
 
     if (signature !== state.lastContextSignature) {
         const defaultNames = currentMode() === 'refine'
-            ? unique([...state.activeWorldNames, ...state.personaWorldNames])
+            ? uniqueWorldInfoIds([...state.activeWorldNames, ...state.personaWorldNames])
             : state.activeWorldNames;
         state.selectedWorldNames = new Set(defaultNames);
         invalidateWorldEntryCatalog();
@@ -1768,7 +1752,7 @@ function bindUiEvents() {
     });
     root.querySelector('#pf-select-active')?.addEventListener('click', () => {
         const names = currentMode() === 'refine'
-            ? unique([...state.activeWorldNames, ...state.personaWorldNames])
+            ? uniqueWorldInfoIds([...state.activeWorldNames, ...state.personaWorldNames])
             : state.activeWorldNames;
         state.selectedWorldNames = new Set(names);
         invalidateWorldEntryCatalog();
@@ -2058,7 +2042,7 @@ function renderActiveChips() {
     for (const name of chips) {
         const chip = document.createElement('span');
         chip.className = 'pf-chip';
-        chip.textContent = state.worldInfoLabels.get(name) || name;
+        chip.textContent = state.worldInfoLabels.get(name) || displayWorldInfoName(name) || name;
         wrap.appendChild(chip);
     }
 }
@@ -2089,7 +2073,7 @@ function renderWorldBookList() {
 
             const text = document.createElement('span');
             text.className = 'pf-book-item-text';
-            text.textContent = state.worldInfoLabels.get(name) || name;
+            text.textContent = state.worldInfoLabels.get(name) || displayWorldInfoName(name) || name;
 
             if (state.activeWorldNames.includes(name)) {
                 const badge = document.createElement('small');
@@ -2131,7 +2115,7 @@ function getEmbeddedBookIdentity(character = getCurrentCharacter(getContext())) 
 function selectedWorldSourceDescriptors() {
     const sources = [...state.selectedWorldNames].map(name => ({
         key: worldBookSourceKey(name),
-        label: name,
+        label: state.worldInfoLabels.get(name) || displayWorldInfoName(name) || name,
         name,
         embedded: false,
     }));
@@ -2231,32 +2215,7 @@ async function fetchWorldInfoList(ctx = getContext()) {
     });
     if (!settingsResponse.ok) throw new Error(readableWorldInfoResponseError(settingsResponse));
     const settings = await settingsResponse.json();
-    return normalizeArray(settings?.world_names ?? settings?.data?.world_names);
-}
-
-function comparableWorldInfoName(value) {
-    return String(value ?? '')
-        .trim()
-        .replace(/\.json$/i, '')
-        .normalize('NFKC')
-        // Worldbook labels may contain decorative emoji while the on-disk
-        // file_id does not. Compare a punctuation-free form for alias lookup.
-        .replace(/[^\p{L}\p{N}]+/gu, '')
-        .toLocaleLowerCase();
-}
-
-function worldInfoRecordAliases(record) {
-    if (typeof record === 'string') return [record];
-    if (!record || typeof record !== 'object') return [];
-    return unique([
-        record.file_id,
-        record.fileId,
-        record.filename,
-        record.file,
-        record.name,
-        record.id,
-        record.value,
-    ]);
+    return normalizeWorldInfoIds(settings?.world_names ?? settings?.data?.world_names);
 }
 
 function getWorldInfoCacheRecords(runtime = {}) {
@@ -2276,8 +2235,13 @@ function getWorldInfoCacheRecords(runtime = {}) {
 function findCachedWorldInfo(name, runtime = {}) {
     const wanted = comparableWorldInfoName(name);
     if (!wanted) return null;
-    for (const [cacheName, value] of getWorldInfoCacheRecords(runtime)) {
-        if (comparableWorldInfoName(cacheName) !== wanted) continue;
+    const cacheRecords = getWorldInfoCacheRecords(runtime);
+    const exactRecord = cacheRecords.find(([cacheName]) => String(cacheName) === String(name));
+    const matchingRecords = exactRecord
+        ? [exactRecord]
+        : cacheRecords.filter(([cacheName]) => comparableWorldInfoName(cacheName) === wanted);
+    if (matchingRecords.length !== 1) return null;
+    for (const [, value] of matchingRecords) {
         const book = normalizeWorldBookPayload(value);
         if (book && extractWorldBookEntries(book, name).length) return book;
     }
@@ -2286,11 +2250,15 @@ function findCachedWorldInfo(name, runtime = {}) {
 
 async function resolveWorldInfoAliases(name, ctx = getContext(), runtime = state.worldInfoRuntime || {}) {
     const wanted = comparableWorldInfoName(name);
-    const aliases = unique([name, String(name ?? '').replace(/\.json$/i, '')]);
+    const aliases = uniqueWorldInfoIds([name, String(name ?? '').replace(/\.json(?=\s*$)/i, '')]);
     if (!wanted) return aliases;
     const addMatchingAliases = values => {
-        for (const value of normalizeArray(values)) {
-            if (comparableWorldInfoName(value) === wanted) aliases.push(value);
+        const candidates = uniqueWorldInfoIds(values);
+        const exact = candidates.find(value => value === name);
+        if (exact !== undefined) aliases.push(exact);
+        else {
+            const matches = candidates.filter(value => comparableWorldInfoName(value) === wanted);
+            if (matches.length === 1) aliases.push(matches[0]);
         }
     };
     // Only use runtime identifiers that resolve to the requested book. Never
@@ -2300,16 +2268,19 @@ async function resolveWorldInfoAliases(name, ctx = getContext(), runtime = state
     addMatchingAliases(runtime.world_info?.globalSelect);
     try {
         const records = await fetchWorldInfoList(ctx);
-        for (const record of records) {
-            const recordAliases = worldInfoRecordAliases(record);
-            if (recordAliases.some(alias => comparableWorldInfoName(alias) === wanted)) {
-                aliases.push(...recordAliases);
-            }
-        }
+        const exactIdRecord = records.find(record => preferredWorldInfoId(record) === name);
+        const exactAliasRecords = exactIdRecord
+            ? [exactIdRecord]
+            : records.filter(record => worldInfoRecordAliases(record).some(alias => alias === name));
+        const matchingRecords = exactAliasRecords.length === 1
+            ? exactAliasRecords
+            : records.filter(record => worldInfoRecordAliases(record)
+                .some(alias => comparableWorldInfoName(alias) === wanted));
+        if (matchingRecords.length === 1) aliases.push(...worldInfoRecordAliases(matchingRecords[0]));
     } catch (error) {
         console.warn(`[${DISPLAY_NAME}] Could not resolve worldbook file aliases.`, error);
     }
-    return unique(aliases);
+    return uniqueWorldInfoIds(aliases);
 }
 
 async function loadWorldInfoCompat(name, ctx = getContext(), runtime = state.worldInfoRuntime || {}) {

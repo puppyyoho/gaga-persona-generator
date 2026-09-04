@@ -1,12 +1,103 @@
 export const WORLD_ENTRY_MODE_ALL = 'all';
 export const WORLD_ENTRY_MODE_CUSTOM = 'custom';
 
+function hasWorldInfoIdentity(value) {
+    return value !== undefined && value !== null && String(value).trim().length > 0;
+}
+
+function hasOwn(object, key) {
+    return Object.prototype.hasOwnProperty.call(object, key);
+}
+
+/**
+ * Worldbook file identifiers are transport identities, not user-entered labels.
+ * SillyTavern accepts them verbatim, so significant leading/trailing whitespace
+ * must survive normalization and de-duplication.
+ */
+export function normalizeWorldInfoIds(value) {
+    const values = Array.isArray(value) ? value : [value];
+    return values
+        .filter(hasWorldInfoIdentity)
+        .map(item => String(item));
+}
+
+export function uniqueWorldInfoIds(values) {
+    return [...new Set(normalizeWorldInfoIds(values))];
+}
+
+export function preferredWorldInfoId(record) {
+    if (typeof record === 'string') return hasWorldInfoIdentity(record) ? record : '';
+    if (!record || typeof record !== 'object') return '';
+    const candidates = [
+        record.file_id,
+        record.fileId,
+        record.filename,
+        record.file,
+        record.id,
+        record.value,
+        record.name,
+    ];
+    const value = candidates.find(hasWorldInfoIdentity);
+    return value === undefined ? '' : String(value);
+}
+
+export function worldInfoRecordAliases(record) {
+    if (typeof record === 'string') return normalizeWorldInfoIds(record);
+    if (!record || typeof record !== 'object') return [];
+    return uniqueWorldInfoIds([
+        record.file_id,
+        record.fileId,
+        record.filename,
+        record.file,
+        record.name,
+        record.id,
+        record.value,
+    ]);
+}
+
+export function comparableWorldInfoName(value) {
+    return String(value ?? '')
+        .trim()
+        .replace(/\.json$/i, '')
+        .normalize('NFKC')
+        .replace(/[^\p{L}\p{N}]+/gu, '')
+        .toLocaleLowerCase();
+}
+
+export function worldInfoRecordMatches(record, value) {
+    const wanted = comparableWorldInfoName(value);
+    if (!wanted) return false;
+    return worldInfoRecordAliases(record)
+        .some(alias => comparableWorldInfoName(alias) === wanted);
+}
+
+export function canonicalWorldInfoName(value, records = [], knownNames = []) {
+    if (!hasWorldInfoIdentity(value)) return '';
+    const raw = String(value);
+    const exactIdRecord = records.find(record => preferredWorldInfoId(record) === raw);
+    if (exactIdRecord) return preferredWorldInfoId(exactIdRecord) || raw;
+    const exactAliasRecords = records.filter(record => worldInfoRecordAliases(record).some(alias => alias === raw));
+    if (exactAliasRecords.length === 1) return preferredWorldInfoId(exactAliasRecords[0]) || raw;
+    const matchingRecords = records.filter(record => worldInfoRecordMatches(record, raw));
+    if (matchingRecords.length === 1) return preferredWorldInfoId(matchingRecords[0]) || raw;
+    const exactKnown = knownNames.find(name => name === raw);
+    if (exactKnown !== undefined) return String(exactKnown);
+    const wanted = comparableWorldInfoName(raw);
+    const matchingKnown = uniqueWorldInfoIds(knownNames)
+        .filter(name => comparableWorldInfoName(name) === wanted);
+    return matchingKnown.length === 1 ? matchingKnown[0] : raw;
+}
+
+export function displayWorldInfoName(value) {
+    return String(value ?? '').trim();
+}
+
 export function normalizeWorldEntrySelections(value) {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
     const normalized = {};
     for (const [sourceKey, raw] of Object.entries(value)) {
-        const key = String(sourceKey || '').trim();
-        if (!key || !raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
+        const key = String(sourceKey ?? '');
+        if (!key.trim() || !raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
         normalized[key] = {
             mode: raw.mode === WORLD_ENTRY_MODE_CUSTOM
                 ? WORLD_ENTRY_MODE_CUSTOM
@@ -23,7 +114,35 @@ export function normalizeWorldEntrySelections(value) {
 }
 
 export function worldBookSourceKey(name) {
-    return 'world:' + String(name ?? '').trim();
+    return 'world:' + String(name ?? '');
+}
+
+/**
+ * v0.10.9 and older trimmed source keys. Migrate only when a normalized label
+ * maps to one exact file id, so two files that differ only by whitespace never
+ * inherit each other's entry selection.
+ */
+export function migrateWorldEntrySelectionKeys(value, worldInfoIds) {
+    const selections = normalizeWorldEntrySelections(value);
+    const ids = uniqueWorldInfoIds(worldInfoIds);
+    const idsByLegacyKey = new Map();
+    for (const id of ids) {
+        const legacyKey = 'world:' + displayWorldInfoName(id);
+        const matches = idsByLegacyKey.get(legacyKey) || [];
+        matches.push(id);
+        idsByLegacyKey.set(legacyKey, matches);
+    }
+
+    let changed = false;
+    for (const [legacyKey, matchingIds] of idsByLegacyKey) {
+        if (matchingIds.length !== 1 || !hasOwn(selections, legacyKey)) continue;
+        const exactKey = worldBookSourceKey(matchingIds[0]);
+        if (exactKey === legacyKey) continue;
+        if (!hasOwn(selections, exactKey)) selections[exactKey] = selections[legacyKey];
+        delete selections[legacyKey];
+        changed = true;
+    }
+    return { selections, changed };
 }
 
 export function embeddedBookSourceKey(identity) {

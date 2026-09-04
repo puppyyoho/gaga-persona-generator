@@ -6,7 +6,7 @@
   "js": "index.js",
   "css": "style.css",
   "author": "Persona Forge",
-  "version": "0.10.9",
+  "version": "0.10.10",
   "license": "CC BY-NC-SA 4.0",
   "homePage": "https://github.com/puppyyoho/gaga-persona-generator",
   "auto_update": false,

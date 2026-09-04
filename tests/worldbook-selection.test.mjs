@@ -2,14 +2,22 @@ import assert from 'node:assert/strict';
 import {
     WORLD_ENTRY_MODE_ALL,
     WORLD_ENTRY_MODE_CUSTOM,
+    canonicalWorldInfoName,
     compactWorldEntrySelection,
+    comparableWorldInfoName,
     createWorldEntryId,
+    displayWorldInfoName,
     embeddedBookSourceKey,
     extractWorldBookEntries,
+    migrateWorldEntrySelectionKeys,
+    normalizeWorldInfoIds,
     normalizeWorldBookPayload,
     normalizeWorldEntrySelections,
+    preferredWorldInfoId,
     selectedWorldEntries,
+    uniqueWorldInfoIds,
     worldBookSourceKey,
+    worldInfoRecordAliases,
 } from '../worldbook-selection.js';
 
 assert.deepEqual(normalizeWorldEntrySelections(null), {});
@@ -23,9 +31,51 @@ assert.deepEqual(normalizeWorldEntrySelections({
 });
 
 assert.equal(worldBookSourceKey('学院'), 'world:学院');
+assert.equal(worldBookSourceKey('✨谢怀璧2🐸 '), 'world:✨谢怀璧2🐸 ');
 assert.equal(embeddedBookSourceKey('card.png'), 'embedded:card.png');
 assert.equal(createWorldEntryId({ uid: 42 }, '5', 5), 'entry:42');
 assert.equal(createWorldEntryId({}, '5', 5), 'entry:5');
+
+const spacedWorldInfoId = '✨谢怀璧2🐸 ';
+const spacedWorldInfoRecord = { file_id: spacedWorldInfoId, name: spacedWorldInfoId };
+assert.deepEqual(normalizeWorldInfoIds(spacedWorldInfoId), [spacedWorldInfoId]);
+assert.deepEqual(uniqueWorldInfoIds([spacedWorldInfoId, spacedWorldInfoId]), [spacedWorldInfoId]);
+assert.equal(preferredWorldInfoId(spacedWorldInfoRecord), spacedWorldInfoId);
+assert.deepEqual(worldInfoRecordAliases(spacedWorldInfoRecord), [spacedWorldInfoId]);
+assert.equal(canonicalWorldInfoName('✨谢怀璧2🐸', [spacedWorldInfoRecord]), spacedWorldInfoId);
+assert.equal(canonicalWorldInfoName(spacedWorldInfoId, [spacedWorldInfoRecord]), spacedWorldInfoId);
+assert.equal(comparableWorldInfoName(spacedWorldInfoId), comparableWorldInfoName('✨谢怀璧2🐸'));
+assert.equal(displayWorldInfoName(spacedWorldInfoId), '✨谢怀璧2🐸');
+const whitespaceCollisionRecords = [
+    { file_id: '同名', name: '同名' },
+    { file_id: '同名 ', name: '同名' },
+];
+assert.equal(canonicalWorldInfoName('同名', whitespaceCollisionRecords), '同名');
+assert.equal(canonicalWorldInfoName('同名 ', whitespaceCollisionRecords), '同名 ');
+assert.deepEqual(normalizeWorldEntrySelections({
+    [worldBookSourceKey(spacedWorldInfoId)]: { mode: 'custom', ids: ['entry:1'] },
+}), {
+    [worldBookSourceKey(spacedWorldInfoId)]: {
+        mode: WORLD_ENTRY_MODE_CUSTOM,
+        strategy: 'include',
+        ids: ['entry:1'],
+    },
+});
+
+const legacySelection = {
+    'world:✨谢怀璧2🐸': { mode: 'custom', ids: ['entry:1'] },
+};
+const migratedSelection = migrateWorldEntrySelectionKeys(legacySelection, [spacedWorldInfoId]);
+assert.equal(migratedSelection.changed, true);
+assert.equal(migratedSelection.selections['world:✨谢怀璧2🐸'], undefined);
+assert.deepEqual(migratedSelection.selections[worldBookSourceKey(spacedWorldInfoId)]?.ids, ['entry:1']);
+
+const ambiguousSelection = migrateWorldEntrySelectionKeys(legacySelection, [
+    '✨谢怀璧2🐸',
+    spacedWorldInfoId,
+]);
+assert.equal(ambiguousSelection.changed, false);
+assert.deepEqual(ambiguousSelection.selections, normalizeWorldEntrySelections(legacySelection));
 
 const standardBook = {
     entries: {
