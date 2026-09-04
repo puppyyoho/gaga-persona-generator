@@ -47,7 +47,7 @@ import {
 const EXTENSION_NAME = 'persona-forge';
 const DISPLAY_NAME = '嘎嘎人设生成器';
 const SETTINGS_KEY = 'personaForge';
-const VERSION = '0.8.1';
+const VERSION = '0.9.0';
 const FAB_ICON_URL = new URL('./icon.png', import.meta.url).href;
 const DEFAULT_FAB_SIZE = 65;
 
@@ -1922,10 +1922,31 @@ function extractEntries(book, sourceName) {
         .filter(entry => entry.content);
 }
 
-function entryToText(entry) {
-    const title = entry.comment ? `｜${entry.comment}` : '';
-    const keys = entry.keys.length ? `\n关键词：${entry.keys.join(' / ')}` : '';
-    return `【世界书：${entry.source}${title}】${keys}\n${entry.content}`;
+function promptCdata(value) {
+    return '<![CDATA[' + String(value ?? '').replaceAll(']]>', ']]]]><![CDATA[>') + ']]>';
+}
+
+function entryToText(entry, index) {
+    const order = Number.isFinite(entry.order) ? entry.order : 0;
+    const lines = [
+        `<document index="${index + 1}" constant="${String(entry.constant)}" order="${order}">`,
+        '<source>' + promptCdata(entry.source) + '</source>',
+    ];
+    if (entry.comment) lines.push('<entry_title>' + promptCdata(entry.comment) + '</entry_title>');
+    if (entry.keys.length) {
+        lines.push(
+            '<entry_keys>',
+            ...entry.keys.map(key => '<key>' + promptCdata(key) + '</key>'),
+            '</entry_keys>',
+        );
+    }
+    lines.push(
+        '<document_content>',
+        promptCdata(entry.content),
+        '</document_content>',
+        '</document>',
+    );
+    return lines.join('\n');
 }
 
 async function collectWorldLore() {
@@ -1952,13 +1973,16 @@ async function collectWorldLore() {
         entries.push(...extractEntries(state.embeddedBook, '角色卡内嵌 Character Book'));
     }
 
-    const blocks = entries.map(entry => (
-        neutralizePersonaReferences(
-            entryToText(entry),
-            ctx.name1,
-            getCharacterName(getCurrentCharacter(ctx)),
-        )
-    ));
+    const characterName = getCharacterName(getCurrentCharacter(ctx));
+    const normalizeSource = value => neutralizePersonaReferences(value, ctx.name1, characterName);
+    const normalizedEntries = entries.map(entry => ({
+        ...entry,
+        source: normalizeSource(entry.source),
+        comment: normalizeSource(entry.comment),
+        keys: entry.keys.map(normalizeSource),
+        content: normalizeSource(entry.content),
+    }));
+    const blocks = normalizedEntries.map(entryToText);
     const text = blocks.join('\n\n');
 
     return {
@@ -1966,7 +1990,7 @@ async function collectWorldLore() {
         totalEntries: entries.length,
         includedEntries: entries.length,
         failures,
-        chars: text.length,
+        chars: normalizedEntries.reduce((total, entry) => total + entry.content.length, 0),
     };
 }
 
@@ -2628,6 +2652,7 @@ async function generatePersona() {
         await refreshContextUi(false);
         const options = collectGenerationOptions();
         const characterContext = collectCharacterContext();
+        const characterName = getCharacterName(getCurrentCharacter(ctx));
         const openingGreeting = options.referenceGreeting ? collectOpeningGreeting() : '';
         const currentPersonaText = options.mode === 'refine' ? collectCurrentPersonaText() : '';
         if (options.mode === 'refine' && !currentPersonaText) {
@@ -2640,12 +2665,14 @@ async function generatePersona() {
                 personaName: getCurrentPersonaContext(ctx).name,
                 currentPersonaText,
                 characterContext,
+                characterName,
                 openingGreeting,
                 loreText: lore.text,
             })
             : buildPersonaGenerationPrompt({
                 options,
                 characterContext,
+                characterName,
                 openingGreeting,
                 loreText: lore.text,
             });
