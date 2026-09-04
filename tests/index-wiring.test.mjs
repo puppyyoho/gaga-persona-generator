@@ -96,6 +96,8 @@ assert.match(indexSource, /fetchWorldInfoList/);
 assert.match(indexSource, /\/api\/worldinfo\/list/);
 assert.match(indexSource, /resolveWorldInfoAliases/);
 assert.match(indexSource, /file_id/);
+assert.match(indexSource, /\\p\{L\}/);
+assert.match(indexSource, /\/api\/settings\/get/);
 assert.match(indexSource, /extractWorldBookEntries/);
 assert.match(indexSource, /selectedWorldEntries/);
 assert.match(indexSource, /worldEntrySelections/);
