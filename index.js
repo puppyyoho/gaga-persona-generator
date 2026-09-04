@@ -58,7 +58,7 @@ import {
 const EXTENSION_NAME = 'persona-forge';
 const DISPLAY_NAME = '嘎嘎人设生成器';
 const SETTINGS_KEY = 'personaForge';
-const VERSION = '0.10.5';
+const VERSION = '0.10.6';
 const FAB_ICON_URL = new URL('./icon.png', import.meta.url).href;
 const DEFAULT_FAB_SIZE = 65;
 const WORLD_ENTRY_PAGE_SIZE = 120;
@@ -2154,6 +2154,12 @@ async function fetchWorldInfoList(ctx = getContext()) {
                     ? data.data
                     : Array.isArray(data?.worlds)
                         ? data.worlds
+                        : Array.isArray(data?.files)
+                            ? data.files
+                            : Array.isArray(data?.world_names)
+                                ? data.world_names
+                                : Array.isArray(data?.data?.world_names)
+                                    ? data.data.world_names
                         : [];
             if (records.length) return records;
         }
@@ -2171,7 +2177,7 @@ async function fetchWorldInfoList(ctx = getContext()) {
     });
     if (!settingsResponse.ok) throw new Error(readableWorldInfoResponseError(settingsResponse));
     const settings = await settingsResponse.json();
-    return normalizeArray(settings?.world_names);
+    return normalizeArray(settings?.world_names ?? settings?.data?.world_names);
 }
 
 function comparableWorldInfoName(value) {
@@ -2199,6 +2205,31 @@ function worldInfoRecordAliases(record) {
     ]);
 }
 
+function getWorldInfoCacheRecords(runtime = {}) {
+    const cache = runtime?.worldInfoCache;
+    if (!cache) return [];
+    try {
+        if (typeof cache.entries === 'function') return [...cache.entries()];
+        if (typeof cache.keys === 'function' && typeof cache.get === 'function') {
+            return [...cache.keys()].map(key => [key, cache.get(key)]);
+        }
+    } catch (error) {
+        console.warn(`[${DISPLAY_NAME}] Could not inspect the worldbook cache.`, error);
+    }
+    return [];
+}
+
+function findCachedWorldInfo(name, runtime = {}) {
+    const wanted = comparableWorldInfoName(name);
+    if (!wanted) return null;
+    for (const [cacheName, value] of getWorldInfoCacheRecords(runtime)) {
+        if (comparableWorldInfoName(cacheName) !== wanted) continue;
+        const book = normalizeWorldBookPayload(value);
+        if (book && extractWorldBookEntries(book, name).length) return book;
+    }
+    return null;
+}
+
 async function resolveWorldInfoAliases(name, ctx = getContext()) {
     const wanted = comparableWorldInfoName(name);
     const aliases = unique([name, String(name ?? '').replace(/\.json$/i, '')]);
@@ -2220,7 +2251,8 @@ async function resolveWorldInfoAliases(name, ctx = getContext()) {
 async function loadWorldInfoCompat(name, ctx = getContext(), runtime = state.worldInfoRuntime || {}) {
     const errors = [];
     const attemptedNames = [];
-    for (const loader of getWorldInfoLoaders(ctx, runtime)) {
+    const loaders = getWorldInfoLoaders(ctx, runtime);
+    for (const loader of loaders) {
         try {
             const raw = await loader.load(name);
             const book = normalizeWorldBookPayload(raw);
@@ -2232,6 +2264,9 @@ async function loadWorldInfoCompat(name, ctx = getContext(), runtime = state.wor
         }
     }
 
+    const cachedBook = findCachedWorldInfo(name, runtime);
+    if (cachedBook) return cachedBook;
+
     // Some forks expose loadWorldInfo but return a wrapper or an empty cache
     // snapshot. The backend endpoint is stable across SillyTavern 1.14+ and is
     // the final source of truth for the selected worldbook file.
@@ -2239,6 +2274,21 @@ async function loadWorldInfoCompat(name, ctx = getContext(), runtime = state.wor
     for (const alias of aliases) {
         if (!alias || attemptedNames.includes(alias)) continue;
         attemptedNames.push(alias);
+
+        const aliasCachedBook = findCachedWorldInfo(alias, runtime);
+        if (aliasCachedBook) return aliasCachedBook;
+
+        for (const loader of loaders) {
+            try {
+                const raw = await loader.load(alias);
+                const book = normalizeWorldBookPayload(raw);
+                if (book && extractWorldBookEntries(book, name).length) return book;
+                errors.push(`${loader.label}（接口标识“${alias}”）：返回了空条目`);
+            } catch (error) {
+                errors.push(`${loader.label}（接口标识“${alias}”）：${error?.message || error}`);
+            }
+        }
+
         try {
             const raw = await fetchWorldInfoDirect(alias, ctx);
             const book = normalizeWorldBookPayload(raw);
