@@ -74,38 +74,55 @@ function looksLikeEntryMap(value) {
 export function normalizeWorldBookPayload(value) {
     const queue = [value];
     const visited = new Set();
+    let emptyBook = null;
     while (queue.length) {
         const current = parseJsonContainer(queue.shift());
         if (!current || typeof current !== 'object' || visited.has(current)) continue;
         visited.add(current);
 
         if (Array.isArray(current) || current instanceof Map) {
-            return { entries: current };
+            const book = { entries: current };
+            if (entryPairs(current).length) return book;
+            emptyBook ??= book;
         }
-        if (Array.isArray(current.entries)
-            || current.entries instanceof Map
-            || (current.entries && typeof current.entries === 'object')) {
-            return current;
+        const parsedEntries = parseJsonContainer(current.entries);
+        if (Array.isArray(parsedEntries)
+            || parsedEntries instanceof Map
+            || (parsedEntries && typeof parsedEntries === 'object')) {
+            const book = parsedEntries === current.entries
+                ? current
+                : { ...current, entries: parsedEntries };
+            // Some provider wrappers expose an empty top-level `entries` field
+            // while the real book lives under data/result. Keep searching until
+            // a non-empty entry collection is found.
+            if (entryPairs(parsedEntries).length) return book;
+            emptyBook ??= book;
         }
         if (looksLikeEntryMap(current)) return { entries: current };
 
         for (const key of [
             'data',
             'result',
+            'response',
+            'payload',
+            'content',
             'book',
             'worldInfo',
             'world_info',
             'lorebook',
             'character_book',
             'originalData',
+            'items',
+            'records',
         ]) {
             if (current[key] !== undefined) queue.push(current[key]);
         }
     }
-    return null;
+    return emptyBook;
 }
 
 function entryPairs(rawEntries) {
+    rawEntries = parseJsonContainer(rawEntries);
     if (rawEntries instanceof Map) return [...rawEntries.entries()].map(([key, value]) => [String(key), value]);
     if (Array.isArray(rawEntries)) return rawEntries.map((entry, index) => [String(index), entry]);
     if (rawEntries && typeof rawEntries === 'object') return Object.entries(rawEntries);
@@ -133,8 +150,10 @@ export function extractWorldBookEntries(book, sourceName, sourceKey = worldBookS
     const normalizedBook = normalizeWorldBookPayload(book);
     if (!normalizedBook) return [];
     return entryPairs(normalizedBook.entries)
-        .filter(([, entry]) => entry && typeof entry === 'object')
+        .map(([key, entry]) => [key, parseJsonContainer(entry) ?? entry])
+        .filter(([, entry]) => entry !== undefined && entry !== null)
         .map(([fallbackKey, rawEntry], index) => {
+            if (typeof rawEntry !== 'object') rawEntry = { content: String(rawEntry) };
             const nested = rawEntry.data && typeof rawEntry.data === 'object' ? rawEntry.data : {};
             const entry = { ...nested, ...rawEntry };
             return {

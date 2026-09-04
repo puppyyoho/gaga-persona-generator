@@ -58,7 +58,7 @@ import {
 const EXTENSION_NAME = 'persona-forge';
 const DISPLAY_NAME = '嘎嘎人设生成器';
 const SETTINGS_KEY = 'personaForge';
-const VERSION = '0.10.3';
+const VERSION = '0.10.4';
 const FAB_ICON_URL = new URL('./icon.png', import.meta.url).href;
 const DEFAULT_FAB_SIZE = 65;
 const WORLD_ENTRY_PAGE_SIZE = 120;
@@ -2134,16 +2134,78 @@ async function fetchWorldInfoDirect(name, ctx = getContext()) {
     return response.json();
 }
 
+async function fetchWorldInfoList(ctx = getContext()) {
+    if (typeof fetch !== 'function') return [];
+    const headers = typeof ctx.getRequestHeaders === 'function'
+        ? ctx.getRequestHeaders()
+        : { 'Content-Type': 'application/json' };
+    const response = await fetch('/api/worldinfo/list', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({}),
+        cache: 'no-cache',
+    });
+    if (!response.ok) throw new Error(readableWorldInfoResponseError(response));
+    const data = await response.json();
+    return Array.isArray(data)
+        ? data
+        : Array.isArray(data?.data)
+            ? data.data
+            : Array.isArray(data?.worlds)
+                ? data.worlds
+                : [];
+}
+
+function comparableWorldInfoName(value) {
+    return String(value ?? '')
+        .trim()
+        .replace(/\.json$/i, '')
+        .normalize('NFKC')
+        .toLocaleLowerCase();
+}
+
+function worldInfoRecordAliases(record) {
+    if (typeof record === 'string') return [record];
+    if (!record || typeof record !== 'object') return [];
+    return unique([
+        record.file_id,
+        record.fileId,
+        record.filename,
+        record.file,
+        record.name,
+        record.id,
+        record.value,
+    ]);
+}
+
+async function resolveWorldInfoAliases(name, ctx = getContext()) {
+    const wanted = comparableWorldInfoName(name);
+    const aliases = unique([name, String(name ?? '').replace(/\.json$/i, '')]);
+    if (!wanted) return aliases;
+    try {
+        const records = await fetchWorldInfoList(ctx);
+        for (const record of records) {
+            const recordAliases = worldInfoRecordAliases(record);
+            if (recordAliases.some(alias => comparableWorldInfoName(alias) === wanted)) {
+                aliases.push(...recordAliases);
+            }
+        }
+    } catch (error) {
+        console.warn(`[${DISPLAY_NAME}] Could not resolve worldbook file aliases.`, error);
+    }
+    return unique(aliases);
+}
+
 async function loadWorldInfoCompat(name, ctx = getContext(), runtime = state.worldInfoRuntime || {}) {
     const errors = [];
-    let emptyBook = null;
+    const attemptedNames = [];
     for (const loader of getWorldInfoLoaders(ctx, runtime)) {
         try {
             const raw = await loader.load(name);
             const book = normalizeWorldBookPayload(raw);
             if (!book) throw new Error('返回结果中没有 entries');
-            emptyBook ??= book;
             if (extractWorldBookEntries(book, name).length) return book;
+            errors.push(`${loader.label}：返回了空条目`);
         } catch (error) {
             errors.push(`${loader.label}：${error?.message || error}`);
         }
@@ -2152,17 +2214,22 @@ async function loadWorldInfoCompat(name, ctx = getContext(), runtime = state.wor
     // Some forks expose loadWorldInfo but return a wrapper or an empty cache
     // snapshot. The backend endpoint is stable across SillyTavern 1.14+ and is
     // the final source of truth for the selected worldbook file.
-    try {
-        const raw = await fetchWorldInfoDirect(name, ctx);
-        const book = normalizeWorldBookPayload(raw);
-        if (!book) throw new Error('响应中没有 entries');
-        if (extractWorldBookEntries(book, name).length || !emptyBook) return book;
-    } catch (error) {
-        errors.push(`世界书接口：${error?.message || error}`);
+    const aliases = await resolveWorldInfoAliases(name, ctx);
+    for (const alias of aliases) {
+        if (!alias || attemptedNames.includes(alias)) continue;
+        attemptedNames.push(alias);
+        try {
+            const raw = await fetchWorldInfoDirect(alias, ctx);
+            const book = normalizeWorldBookPayload(raw);
+            if (!book) throw new Error('响应中没有 entries');
+            if (extractWorldBookEntries(book, name).length) return book;
+            errors.push(`接口标识“${alias}”：返回了空条目`);
+        } catch (error) {
+            errors.push(`接口标识“${alias}”：${error?.message || error}`);
+        }
     }
 
-    if (emptyBook) return emptyBook;
-    throw new Error(errors.join('；') || '没有可用的世界书读取接口');
+    throw new Error(errors.join('；') || `没有读取到“${name}”的任何条目`);
 }
 
 function getWorldEntrySelections() {
