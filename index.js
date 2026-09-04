@@ -57,7 +57,7 @@ import {
 const EXTENSION_NAME = 'persona-forge';
 const DISPLAY_NAME = '嘎嘎人设生成器';
 const SETTINGS_KEY = 'personaForge';
-const VERSION = '0.10.0';
+const VERSION = '0.10.1';
 const FAB_ICON_URL = new URL('./icon.png', import.meta.url).href;
 const DEFAULT_FAB_SIZE = 65;
 const WORLD_ENTRY_PAGE_SIZE = 120;
@@ -649,6 +649,13 @@ function createStaticUi() {
                     <div class="pf-book-summary">
                         <span class="pf-label-mini">自动识别到的世界书</span>
                         <div class="pf-chip-wrap" id="pf-active-book-chips"></div>
+                        <div class="pf-entry-selection-bar pf-entry-selection-bar-top">
+                            <div>
+                                <strong>条目读取范围</strong>
+                                <small id="pf-entry-selection-summary">全部已启用条目</small>
+                            </div>
+                            <button class="pf-mini-button" type="button" id="pf-open-entry-picker">选择条目</button>
+                        </div>
                     </div>
                 </section>
 
@@ -865,13 +872,6 @@ function createStaticUi() {
                             <button class="pf-mini-button" type="button" id="pf-refresh">刷新识别</button>
                         </div>
                         <div id="pf-book-list" class="pf-book-list"></div>
-                        <div class="pf-entry-selection-bar">
-                            <div>
-                                <strong>条目读取范围</strong>
-                                <small id="pf-entry-selection-summary">全部已启用条目</small>
-                            </div>
-                            <button class="pf-mini-button" type="button" id="pf-open-entry-picker">选择条目</button>
-                        </div>
                         <div class="pf-inline-note" id="pf-embedded-note" hidden>✓ 当前角色卡还包含内嵌 Character Book，将自动读取。</div>
                         <div class="pf-inline-note" id="pf-persona-book-note" hidden>检测到当前 Persona 绑定的世界书，默认不勾选，避免沿用当前 User 身份。</div>
                     </div>

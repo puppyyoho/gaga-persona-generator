@@ -650,6 +650,10 @@ html.pf-modal-open body {
     background: color-mix(in srgb, var(--pf-bg) 55%, transparent);
 }
 
+.pf-entry-selection-bar-top {
+    margin-top: 2px;
+}
+
 .pf-entry-selection-bar > div {
     min-width: 0;
     display: grid;

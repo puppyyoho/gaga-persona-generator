@@ -76,6 +76,10 @@ assert.match(indexSource, /<document index=/);
 assert.match(indexSource, /<document_content>/);
 assert.match(indexSource, /normalizedEntries/);
 assert.match(indexSource, /pf-open-entry-picker/);
+assert.ok(
+    indexSource.indexOf('id="pf-open-entry-picker"') < indexSource.indexOf('class="pf-card pf-api-card"'),
+    'Worldbook entry selection must remain beside the detected worldbooks near the top of the modal',
+);
 assert.match(indexSource, /pf-entry-picker-list/);
 assert.match(indexSource, /pf-entry-search/);
 assert.match(indexSource, /pf-entry-book-filter/);
