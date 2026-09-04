@@ -68,6 +68,18 @@ assert.equal(
     extractWorldBookEntries(JSON.stringify({ data: standardBook }), 'JSON 世界书').length,
     2,
 );
+assert.equal(
+    extractWorldBookEntries({ entries: {}, data: { result: standardBook } }, '空壳包装世界书').length,
+    2,
+);
+assert.equal(
+    extractWorldBookEntries({ entries: JSON.stringify(standardBook.entries) }, '字符串条目世界书').length,
+    2,
+);
+assert.equal(
+    extractWorldBookEntries({ entries: { 1: '纯文本条目' } }, '纯文本世界书')[0].content,
+    '纯文本条目',
+);
 assert.deepEqual(extractWorldBookEntries({
     character_book: {
         entries: [{
