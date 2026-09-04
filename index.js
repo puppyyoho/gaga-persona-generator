@@ -58,7 +58,7 @@ import {
 const EXTENSION_NAME = 'persona-forge';
 const DISPLAY_NAME = '嘎嘎人设生成器';
 const SETTINGS_KEY = 'personaForge';
-const VERSION = '0.10.8';
+const VERSION = '0.10.9';
 const FAB_ICON_URL = new URL('./icon.png', import.meta.url).href;
 const DEFAULT_FAB_SIZE = 65;
 const WORLD_ENTRY_PAGE_SIZE = 120;
@@ -70,6 +70,7 @@ const state = {
     worldInfoRuntime: null,
     floatingResizeBound: false,
     allWorldNames: [],
+    worldInfoLabels: new Map(),
     activeWorldNames: [],
     personaWorldNames: [],
     selectedWorldNames: new Set(),
@@ -192,14 +193,57 @@ function resolveCharacterLoreMatches(character, charLore) {
     return matched;
 }
 
+function preferredWorldInfoId(record) {
+    if (typeof record === 'string') return record.trim();
+    if (!record || typeof record !== 'object') return '';
+    return String(
+        record.file_id
+        ?? record.fileId
+        ?? record.filename
+        ?? record.file
+        ?? record.id
+        ?? record.value
+        ?? record.name
+        ?? '',
+    ).trim();
+}
+
+function worldInfoRecordMatches(record, value) {
+    const wanted = comparableWorldInfoName(value);
+    if (!wanted) return false;
+    return worldInfoRecordAliases(record)
+        .some(alias => comparableWorldInfoName(alias) === wanted);
+}
+
+function canonicalWorldInfoName(value, records = [], knownNames = []) {
+    const raw = String(value ?? '').trim();
+    if (!raw) return '';
+    const exactRecord = records.find(record => worldInfoRecordAliases(record).some(alias => alias === raw));
+    if (exactRecord) return preferredWorldInfoId(exactRecord) || raw;
+    const matchingRecords = records.filter(record => worldInfoRecordMatches(record, raw));
+    if (matchingRecords.length === 1) return preferredWorldInfoId(matchingRecords[0]) || raw;
+    const exactKnown = knownNames.find(name => name === raw);
+    if (exactKnown) return exactKnown;
+    const matchingKnown = knownNames.filter(name => comparableWorldInfoName(name) === comparableWorldInfoName(raw));
+    return matchingKnown.length === 1 ? matchingKnown[0] : raw;
+}
+
 async function detectWorldBooks() {
     const ctx = getContext();
     const character = getCurrentCharacter(ctx);
     const runtime = await getWorldInfoRuntime();
 
-    const allWorldNames = typeof ctx.getWorldInfoNames === 'function'
+    let allWorldNames = typeof ctx.getWorldInfoNames === 'function'
         ? normalizeArray(ctx.getWorldInfoNames())
         : normalizeArray(runtime.world_names);
+    let worldRecords = [];
+    try {
+        worldRecords = await fetchWorldInfoList(ctx);
+        const listedIds = unique(worldRecords.map(preferredWorldInfoId).filter(Boolean));
+        if (listedIds.length) allWorldNames = listedIds;
+    } catch (error) {
+        console.warn(`[${DISPLAY_NAME}] Could not refresh the worldbook file list.`, error);
+    }
 
     const active = [];
 
@@ -220,9 +264,19 @@ async function detectWorldBooks() {
     // This prevents the active User identity from contaminating a newly generated Persona.
     const personaWorlds = normalizeArray(ctx.powerUserSettings?.persona_description_lorebook);
 
-    state.allWorldNames = unique(allWorldNames);
-    state.activeWorldNames = unique(active).filter(name => state.allWorldNames.length === 0 || state.allWorldNames.includes(name));
-    state.personaWorldNames = unique(personaWorlds).filter(name => state.allWorldNames.length === 0 || state.allWorldNames.includes(name));
+    const knownWorldNames = unique(allWorldNames);
+    const canonicalize = value => canonicalWorldInfoName(value, worldRecords, knownWorldNames);
+    const rawActiveWorldNames = unique(active);
+    const rawPersonaWorldNames = unique(personaWorlds);
+    state.worldInfoLabels = new Map([
+        ...rawActiveWorldNames.map(name => [canonicalize(name), name]),
+        ...rawPersonaWorldNames.map(name => [canonicalize(name), name]),
+    ]);
+    state.allWorldNames = knownWorldNames;
+    state.activeWorldNames = unique(rawActiveWorldNames.map(canonicalize))
+        .filter(name => state.allWorldNames.length === 0 || state.allWorldNames.includes(name));
+    state.personaWorldNames = unique(rawPersonaWorldNames.map(canonicalize))
+        .filter(name => state.allWorldNames.length === 0 || state.allWorldNames.includes(name));
     state.embeddedBook = getEmbeddedCharacterBook(character);
 
     // On first context load, default to active books. Preserve manual user selection afterward.
@@ -2004,7 +2058,7 @@ function renderActiveChips() {
     for (const name of chips) {
         const chip = document.createElement('span');
         chip.className = 'pf-chip';
-        chip.textContent = name;
+        chip.textContent = state.worldInfoLabels.get(name) || name;
         wrap.appendChild(chip);
     }
 }
@@ -2035,7 +2089,7 @@ function renderWorldBookList() {
 
             const text = document.createElement('span');
             text.className = 'pf-book-item-text';
-            text.textContent = name;
+            text.textContent = state.worldInfoLabels.get(name) || name;
 
             if (state.activeWorldNames.includes(name)) {
                 const badge = document.createElement('small');
