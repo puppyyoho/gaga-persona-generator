@@ -58,7 +58,7 @@ import {
 const EXTENSION_NAME = 'persona-forge';
 const DISPLAY_NAME = '嘎嘎人设生成器';
 const SETTINGS_KEY = 'personaForge';
-const VERSION = '0.10.6';
+const VERSION = '0.10.7';
 const FAB_ICON_URL = new URL('./icon.png', import.meta.url).href;
 const DEFAULT_FAB_SIZE = 65;
 const WORLD_ENTRY_PAGE_SIZE = 120;
@@ -2230,10 +2230,13 @@ function findCachedWorldInfo(name, runtime = {}) {
     return null;
 }
 
-async function resolveWorldInfoAliases(name, ctx = getContext()) {
+async function resolveWorldInfoAliases(name, ctx = getContext(), runtime = state.worldInfoRuntime || {}) {
     const wanted = comparableWorldInfoName(name);
     const aliases = unique([name, String(name ?? '').replace(/\.json$/i, '')]);
     if (!wanted) return aliases;
+    aliases.push(...normalizeArray(runtime.world_names));
+    aliases.push(...normalizeArray(runtime.selected_world_info));
+    aliases.push(...normalizeArray(runtime.world_info?.globalSelect));
     try {
         const records = await fetchWorldInfoList(ctx);
         for (const record of records) {
@@ -2270,7 +2273,7 @@ async function loadWorldInfoCompat(name, ctx = getContext(), runtime = state.wor
     // Some forks expose loadWorldInfo but return a wrapper or an empty cache
     // snapshot. The backend endpoint is stable across SillyTavern 1.14+ and is
     // the final source of truth for the selected worldbook file.
-    const aliases = await resolveWorldInfoAliases(name, ctx);
+    const aliases = await resolveWorldInfoAliases(name, ctx, runtime);
     for (const alias of aliases) {
         if (!alias || attemptedNames.includes(alias)) continue;
         attemptedNames.push(alias);

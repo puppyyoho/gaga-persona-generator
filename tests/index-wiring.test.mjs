@@ -95,6 +95,8 @@ assert.match(indexSource, /\/api\/worldinfo\/get/);
 assert.match(indexSource, /fetchWorldInfoList/);
 assert.match(indexSource, /\/api\/worldinfo\/list/);
 assert.match(indexSource, /resolveWorldInfoAliases/);
+assert.match(indexSource, /runtime\.world_names/);
+assert.match(indexSource, /runtime\.selected_world_info/);
 assert.match(indexSource, /worldInfoCache/);
 assert.match(indexSource, /findCachedWorldInfo/);
 assert.match(indexSource, /data\?\.files/);
