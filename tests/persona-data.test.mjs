@@ -48,6 +48,22 @@ const payload = {
 const fenced = String.fromCharCode(96).repeat(3) + 'json\n' + JSON.stringify(payload) + '\n' + String.fromCharCode(96).repeat(3);
 const parsed = parseStructuredResponse(fenced);
 assert.deepEqual(
+    parseStructuredResponse('[Generative response]\n' + JSON.stringify(payload)),
+    payload,
+);
+assert.deepEqual(
+    parseStructuredResponse('[Generative metadata]\n{"ignored":true}\n' + JSON.stringify(payload)),
+    payload,
+);
+assert.throws(
+    () => parseStructuredResponse('[Generative Language API Error]: quota exceeded (429)'),
+    /上游 API 未返回人设 JSON.*Generative Language API Error.*429/,
+);
+assert.throws(
+    () => parseStructuredResponse('{"error":{"message":"模型服务暂时不可用"}}'),
+    /上游 API 返回错误：模型服务暂时不可用/,
+);
+assert.deepEqual(
     parseStructuredResponse('模型说明如下：\n{"name_candidates":[{"name":"测试",}],"profile":{"基本身份":{"年龄":30,},}}\n以上。'),
     { name_candidates: [{ name: '测试' }], profile: { 基本身份: { 年龄: 30 } } },
 );

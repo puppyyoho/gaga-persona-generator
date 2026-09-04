@@ -588,16 +588,65 @@ function extractJsonText(raw) {
         JSON.parse(unfenced);
         return unfenced;
     } catch {
-        const extracted = findBalancedJson(unfenced);
-        if (extracted) return extracted;
+        // The Google/Generative Language adapters may prefix a response with a
+        // bracketed status or error label. That label is not a JSON array. Scan
+        // object starts explicitly and prefer the object that has our schema.
+        let firstObject = '';
+        let firstObjectStart = -1;
+        let structuredRecoveryStart = -1;
+        for (let index = unfenced.indexOf('{'); index >= 0; index = unfenced.indexOf('{', index + 1)) {
+            if (firstObjectStart < 0) firstObjectStart = index;
+            const remainder = unfenced.slice(index);
+            const extracted = findBalancedJson(remainder);
+            if (!extracted) {
+                if (structuredRecoveryStart < 0
+                    && /"(?:profile|persona|人设|name_candidates|candidates|候选姓名)"\s*:/.test(remainder)) {
+                    structuredRecoveryStart = index;
+                }
+                continue;
+            }
+            if (!firstObject) firstObject = extracted;
+            const candidate = tryParseJsonValue(extracted).value;
+            if (hasStructuredPayloadShape(candidate)) return extracted;
+        }
+        if (structuredRecoveryStart >= 0) return unfenced.slice(structuredRecoveryStart);
+        if (firstObject) return firstObject;
         // If malformed or truncated JSON cannot be balanced, keep everything
         // from the first opening token. Cutting at the last closing brace can
         // discard a later, partially generated profile and leave only the
         // candidate-name prefix, which defeats the recovery pass.
-        const start = unfenced.indexOf('{');
-        if (start >= 0) return unfenced.slice(start);
-        throw new Error('模型没有返回可识别的 JSON。');
+        if (firstObjectStart >= 0) return unfenced.slice(firstObjectStart);
+        throw new Error(describeNonJsonResponse(unfenced));
     }
+}
+
+function hasStructuredPayloadShape(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+    return ['profile', 'persona', '人设', 'name_candidates', 'candidates', '候选姓名']
+        .some(key => Object.prototype.hasOwnProperty.call(value, key));
+}
+
+function responsePreview(text, limit = 240) {
+    const compact = String(text ?? '').replace(/\s+/g, ' ').trim();
+    return compact.length > limit ? compact.slice(0, limit) + '…' : compact;
+}
+
+function describeNonJsonResponse(text) {
+    const preview = responsePreview(text);
+    const upstreamError = /\b(?:error|failed|failure|exception|invalid|unavailable|blocked)\b/i.test(preview)
+        || /^\[(?:google)?generative/i.test(preview);
+    return upstreamError
+        ? `上游 API 未返回人设 JSON：${preview}`
+        : `模型没有返回可识别的 JSON。原始响应：${preview}`;
+}
+
+function structuredApiError(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value) || hasStructuredPayloadShape(value)) return '';
+    const error = value.error ?? value.errors;
+    if (!error) return '';
+    if (typeof error === 'string') return responsePreview(error);
+    if (Array.isArray(error)) return responsePreview(error.map(item => item?.message ?? item).join('；'));
+    return responsePreview(error.message ?? error.detail ?? error.status ?? JSON.stringify(error));
 }
 
 function findBalancedJson(text) {
@@ -854,6 +903,8 @@ export function parseStructuredResponse(raw) {
     const parsedResult = tryParseJsonValue(jsonText);
     const parsed = parsedResult.value;
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        const apiError = structuredApiError(parsed);
+        if (apiError) throw new Error('上游 API 返回错误：' + apiError);
         return parsed;
     }
     const recovered = recoverStructuredPayload(jsonText);
