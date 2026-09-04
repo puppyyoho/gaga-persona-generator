@@ -245,6 +245,8 @@ export function buildPersonaSystemPrompt(task = 'create') {
         '',
         '<output_contract>',
         '只输出一个能够被 JSON.parse() 直接解析的 JSON 对象。不得在 JSON 外输出 Markdown、代码块、解释、前言、思考过程、事实账本、额外清单或结语。',
+        'JSON 的每个对象字段和数组元素之间必须使用英文逗号。字符串内部不得直接使用英文双引号；需要引用时优先使用中文引号“”或将英文双引号转义。字符串中的换行必须写成转义字符。',
+        '若回复空间不足，缩短后面的栏目，优先保证 profile 已完成，并在停止输出前闭合当前字符串、数组和对象。',
         '</output_contract>',
     ].join('\n');
 }
@@ -474,7 +476,7 @@ export function buildPersonaGenerationPrompt(input) {
         '完整阅读 source_material 后再生成。先锁定实体、关系和硬事实，再进行合理创作。',
         '输出前检查是否出现重复配偶、重复亲属、角色混淆、世界书机械复述、模板化句式、破折号和无依据新增关系。',
         '所有自然语言不得使用先否定后肯定的对照句式，不得包含任何破折号。',
-        '严格按照 output_schema 输出一个能够被 JSON.parse() 直接解析的 JSON 对象。JSON 外不得出现任何文字。',
+        '严格按照 output_schema 输出一个能够被 JSON.parse() 直接解析的 JSON 对象。字段与数组元素之间不得漏写英文逗号，所有括号必须完整闭合。JSON 外不得出现任何文字。',
         '</final_instruction>',
     ].filter(line => line !== '').join('\n');
 }
@@ -555,7 +557,7 @@ export function buildPersonaRefinementPrompt(input) {
         '完整阅读 source_material 后再优化。先锁定原文事实、实体和关系，再改善表达与因果。',
         '输出前检查是否遗漏原文、混淆角色、重复创造关系、机械复述世界书、进行无依据扩写、使用模板化句式或破折号。',
         '所有自然语言不得使用先否定后肯定的对照句式，不得包含任何破折号。',
-        '严格按照 output_schema 输出一个能够被 JSON.parse() 直接解析的 JSON 对象。JSON 外不得出现任何文字。',
+        '严格按照 output_schema 输出一个能够被 JSON.parse() 直接解析的 JSON 对象。字段与数组元素之间不得漏写英文逗号，所有括号必须完整闭合。JSON 外不得出现任何文字。',
         '</final_instruction>',
     ].filter(line => line !== '').join('\n');
 }
@@ -588,12 +590,12 @@ function extractJsonText(raw) {
     } catch {
         const extracted = findBalancedJson(unfenced);
         if (extracted) return extracted;
-        // If malformed prose contains an unmatched quote, the balanced
-        // scanner may not be able to finish. Keep a conservative first/last
-        // object fallback so the syntax-repair pass still gets a chance.
+        // If malformed or truncated JSON cannot be balanced, keep everything
+        // from the first opening token. Cutting at the last closing brace can
+        // discard a later, partially generated profile and leave only the
+        // candidate-name prefix, which defeats the recovery pass.
         const start = unfenced.indexOf('{');
-        const end = unfenced.lastIndexOf('}');
-        if (start >= 0 && end > start) return unfenced.slice(start, end + 1);
+        if (start >= 0) return unfenced.slice(start);
         throw new Error('模型没有返回可识别的 JSON。');
     }
 }
@@ -668,6 +670,27 @@ function removeTrailingCommas(text) {
     return output;
 }
 
+function isLikelyJsonProperty(text, start) {
+    if (text[start] !== '"') return false;
+    let escaped = false;
+    for (let index = start + 1; index < text.length; index += 1) {
+        const char = text[index];
+        if (escaped) {
+            escaped = false;
+            continue;
+        }
+        if (char === '\\') {
+            escaped = true;
+            continue;
+        }
+        if (char !== '"') continue;
+        let next = index + 1;
+        while (/\s/.test(text[next] || '')) next += 1;
+        return text[next] === ':';
+    }
+    return false;
+}
+
 function repairJsonStringSyntax(text) {
     let output = '';
     let inString = false;
@@ -695,8 +718,11 @@ function repairJsonStringSyntax(text) {
             while (/\s/.test(text[next] || '')) next += 1;
             // Models occasionally put an unescaped quote in prose. A quote
             // followed by JSON punctuation is a real string terminator;
-            // otherwise preserve the prose by escaping it.
-            if (next >= text.length || ',}]:'.includes(text[next])) {
+            // a following property key also means the model merely forgot the
+            // comma between two fields. Otherwise preserve the prose quote.
+            if (next >= text.length
+                || ',}]:'.includes(text[next])
+                || isLikelyJsonProperty(text, next)) {
                 output += char;
                 inString = false;
             } else {
@@ -716,29 +742,124 @@ function repairJsonStringSyntax(text) {
     return output;
 }
 
-export function parseStructuredResponse(raw) {
-    const jsonText = extractJsonText(raw);
-    let lastError;
-    const repairedStrings = repairJsonStringSyntax(jsonText);
-    const candidates = [
-        jsonText,
-        removeTrailingCommas(jsonText),
+function insertMissingJsonCommas(text) {
+    const stringToken = '"(?:\\\\.|[^"\\\\])*"';
+    const numberToken = '-?\\d+(?:\\.\\d+)?(?:[eE][+-]?\\d+)?';
+    const valueEnd = `(?:${stringToken}|true|false|null|${numberToken}|[}\\]])`;
+    const nextProperty = `${stringToken}\\s*:`;
+    const fields = new RegExp(`(${valueEnd})(\\s*)(?=${nextProperty})`, 'g');
+    const arrayObjects = /([}\]])(\s*)(?=[{\[])/g;
+    return text
+        .replace(fields, '$1,$2')
+        .replace(arrayObjects, '$1,$2');
+}
+
+function closeIncompleteJson(text) {
+    let output = String(text || '').trim();
+    if (!output || !'[{'.includes(output[0])) return output;
+
+    // A cut-off response can end immediately after a comma or after writing
+    // the next property name and colon. Remove only that incomplete tail.
+    output = output.replace(/,\s*$/, '');
+    output = output.replace(/,?\s*"(?:\\.|[^"\\])*"\s*:\s*$/, '');
+
+    const stack = [];
+    let inString = false;
+    let escaped = false;
+    for (let index = 0; index < output.length; index += 1) {
+        const char = output[index];
+        if (inString) {
+            if (escaped) escaped = false;
+            else if (char === '\\') escaped = true;
+            else if (char === '"') inString = false;
+            continue;
+        }
+        if (char === '"') {
+            inString = true;
+            continue;
+        }
+        if (char === '{' || char === '[') {
+            stack.push(char);
+            continue;
+        }
+        if (char !== '}' && char !== ']') continue;
+        const expected = char === '}' ? '{' : '[';
+        if (stack[stack.length - 1] !== expected) return output;
+        stack.pop();
+    }
+
+    if (inString) output += escaped ? '\\"' : '"';
+    output = output.replace(/,\s*$/, '');
+    while (stack.length) output += stack.pop() === '{' ? '}' : ']';
+    return output;
+}
+
+function jsonRepairCandidates(text) {
+    const repairedStrings = repairJsonStringSyntax(text);
+    const repairedStructure = insertMissingJsonCommas(removeTrailingCommas(repairedStrings));
+    return [...new Set([
+        text,
+        removeTrailingCommas(text),
         repairedStrings,
-        repairJsonStringSyntax(removeTrailingCommas(jsonText)),
         removeTrailingCommas(repairedStrings),
-    ];
-    for (const candidate of candidates) {
+        repairedStructure,
+        closeIncompleteJson(repairedStructure),
+    ])];
+}
+
+function tryParseJsonValue(text) {
+    let lastError;
+    for (const candidate of jsonRepairCandidates(text)) {
         try {
-            const parsed = JSON.parse(candidate);
-            if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-                throw new Error('顶层结果不是对象。');
-            }
-            return parsed;
+            return { value: JSON.parse(candidate), error: null };
         } catch (error) {
             lastError = error;
         }
     }
-    throw new Error('结构化结果解析失败：' + lastError.message);
+    return { value: undefined, error: lastError };
+}
+
+function extractPropertyJsonValue(text, propertyNames, openingCharacter) {
+    const repaired = insertMissingJsonCommas(removeTrailingCommas(repairJsonStringSyntax(text)));
+    for (const name of propertyNames) {
+        const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const match = new RegExp(`"${escapedName}"\\s*:\\s*`).exec(repaired);
+        if (!match) continue;
+        const start = repaired.indexOf(openingCharacter, match.index + match[0].length);
+        if (start < 0) continue;
+        const remainder = repaired.slice(start);
+        const fragment = findBalancedJson(remainder) || closeIncompleteJson(remainder);
+        const parsed = tryParseJsonValue(fragment).value;
+        if (parsed !== undefined) return parsed;
+    }
+    return undefined;
+}
+
+function recoverStructuredPayload(text) {
+    const profile = extractPropertyJsonValue(text, ['profile', 'persona', '人设'], '{');
+    if (!profile || typeof profile !== 'object' || Array.isArray(profile)) return null;
+    const names = extractPropertyJsonValue(
+        text,
+        ['name_candidates', 'candidates', '候选姓名'],
+        '[',
+    );
+    return {
+        name_candidates: Array.isArray(names) ? names : [],
+        profile,
+    };
+}
+
+export function parseStructuredResponse(raw) {
+    const jsonText = extractJsonText(raw);
+    const parsedResult = tryParseJsonValue(jsonText);
+    const parsed = parsedResult.value;
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed;
+    }
+    const recovered = recoverStructuredPayload(jsonText);
+    if (recovered) return recovered;
+    const detail = parsedResult.error?.message || '顶层结果不是对象。';
+    throw new Error('结构化结果解析失败：' + detail);
 }
 
 function normalizeCandidate(candidate) {

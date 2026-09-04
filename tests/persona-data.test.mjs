@@ -63,6 +63,28 @@ assert.deepEqual(
     parseStructuredResponse('{"profile":{"备注":"他说"你好"}}'),
     { profile: { 备注: '他说"你好' } },
 );
+assert.deepEqual(
+    parseStructuredResponse('{"name_candidates":[{"name":"测试"}],"profile":{"基本身份":{"年龄":30}\n"外貌与体型":"清瘦"}}'),
+    {
+        name_candidates: [{ name: '测试' }],
+        profile: { 基本身份: { 年龄: 30 }, 外貌与体型: '清瘦' },
+    },
+);
+assert.deepEqual(
+    parseStructuredResponse('{"name_candidates":[{"name":"测试"}],"profile":{"基本身份":"安静"\n"外貌与体型":"清瘦"'),
+    {
+        name_candidates: [{ name: '测试' }],
+        profile: { 基本身份: '安静', 外貌与体型: '清瘦' },
+    },
+);
+assert.deepEqual(
+    parseStructuredResponse('{"name_candidates":[{"name":"测试"}],"profile":{"基本身份":"完整内容"},"change_log":[{"section":"基本身份"'),
+    {
+        name_candidates: [{ name: '测试' }],
+        profile: { 基本身份: '完整内容' },
+        change_log: [{ section: '基本身份' }],
+    },
+);
 const result = normalizeStructuredResult(parsed, options, '当前U');
 const yaml = renderStructuredResult(result, 1, 'yaml');
 const natural = renderStructuredResult(result, 0, 'natural');
