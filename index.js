@@ -58,7 +58,7 @@ import {
 const EXTENSION_NAME = 'persona-forge';
 const DISPLAY_NAME = '嘎嘎人设生成器';
 const SETTINGS_KEY = 'personaForge';
-const VERSION = '0.10.4';
+const VERSION = '0.10.5';
 const FAB_ICON_URL = new URL('./icon.png', import.meta.url).href;
 const DEFAULT_FAB_SIZE = 65;
 const WORLD_ENTRY_PAGE_SIZE = 120;
@@ -2139,21 +2139,39 @@ async function fetchWorldInfoList(ctx = getContext()) {
     const headers = typeof ctx.getRequestHeaders === 'function'
         ? ctx.getRequestHeaders()
         : { 'Content-Type': 'application/json' };
-    const response = await fetch('/api/worldinfo/list', {
+    try {
+        const response = await fetch('/api/worldinfo/list', {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({}),
+            cache: 'no-cache',
+        });
+        if (response.ok) {
+            const data = await response.json();
+            const records = Array.isArray(data)
+                ? data
+                : Array.isArray(data?.data)
+                    ? data.data
+                    : Array.isArray(data?.worlds)
+                        ? data.worlds
+                        : [];
+            if (records.length) return records;
+        }
+    } catch (error) {
+        console.warn(`[${DISPLAY_NAME}] Worldbook list endpoint unavailable.`, error);
+    }
+
+    // Older SillyTavern builds expose the file identifiers through settings
+    // even when the dedicated worldinfo list endpoint is unavailable.
+    const settingsResponse = await fetch('/api/settings/get', {
         method: 'POST',
         headers,
         body: JSON.stringify({}),
         cache: 'no-cache',
     });
-    if (!response.ok) throw new Error(readableWorldInfoResponseError(response));
-    const data = await response.json();
-    return Array.isArray(data)
-        ? data
-        : Array.isArray(data?.data)
-            ? data.data
-            : Array.isArray(data?.worlds)
-                ? data.worlds
-                : [];
+    if (!settingsResponse.ok) throw new Error(readableWorldInfoResponseError(settingsResponse));
+    const settings = await settingsResponse.json();
+    return normalizeArray(settings?.world_names);
 }
 
 function comparableWorldInfoName(value) {
@@ -2161,6 +2179,9 @@ function comparableWorldInfoName(value) {
         .trim()
         .replace(/\.json$/i, '')
         .normalize('NFKC')
+        // Worldbook labels may contain decorative emoji while the on-disk
+        // file_id does not. Compare a punctuation-free form for alias lookup.
+        .replace(/[^\p{L}\p{N}]+/gu, '')
         .toLocaleLowerCase();
 }
 
