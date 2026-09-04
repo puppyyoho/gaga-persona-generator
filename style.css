@@ -866,6 +866,11 @@ html.pf-modal-open body {
     color: var(--pf-accent);
 }
 
+.pf-entry-badge.is-disabled {
+    background: color-mix(in srgb, var(--pf-danger) 12%, transparent);
+    color: color-mix(in srgb, var(--pf-danger) 78%, var(--pf-text));
+}
+
 .pf-entry-preview {
     display: -webkit-box;
     overflow: hidden;

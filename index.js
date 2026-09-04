@@ -47,8 +47,9 @@ import {
     WORLD_ENTRY_MODE_ALL,
     WORLD_ENTRY_MODE_CUSTOM,
     compactWorldEntrySelection,
-    createWorldEntryId,
     embeddedBookSourceKey,
+    extractWorldBookEntries,
+    normalizeWorldBookPayload,
     normalizeWorldEntrySelections,
     selectedWorldEntries,
     worldBookSourceKey,
@@ -57,7 +58,7 @@ import {
 const EXTENSION_NAME = 'persona-forge';
 const DISPLAY_NAME = '嘎嘎人设生成器';
 const SETTINGS_KEY = 'personaForge';
-const VERSION = '0.10.2';
+const VERSION = '0.10.3';
 const FAB_ICON_URL = new URL('./icon.png', import.meta.url).href;
 const DEFAULT_FAB_SIZE = 65;
 const WORLD_ENTRY_PAGE_SIZE = 120;
@@ -2098,10 +2099,70 @@ function invalidateWorldEntryCatalog() {
     updateWorldEntrySelectionSummary();
 }
 
-function getWorldInfoLoader(ctx = getContext(), runtime = state.worldInfoRuntime || {}) {
-    if (typeof ctx.loadWorldInfo === 'function') return ctx.loadWorldInfo.bind(ctx);
-    if (typeof runtime.loadWorldInfo === 'function') return runtime.loadWorldInfo;
-    return null;
+function getWorldInfoLoaders(ctx = getContext(), runtime = state.worldInfoRuntime || {}) {
+    const loaders = [];
+    if (typeof ctx.loadWorldInfo === 'function') {
+        loaders.push({ label: '酒馆上下文接口', load: ctx.loadWorldInfo.bind(ctx), original: ctx.loadWorldInfo });
+    }
+    if (typeof runtime.loadWorldInfo === 'function'
+        && !loaders.some(loader => loader.original === runtime.loadWorldInfo)) {
+        loaders.push({ label: '世界书运行时接口', load: runtime.loadWorldInfo, original: runtime.loadWorldInfo });
+    }
+    return loaders;
+}
+
+function readableWorldInfoResponseError(response) {
+    const status = Number(response?.status);
+    const statusText = String(response?.statusText || '').trim();
+    return [Number.isFinite(status) && status > 0 ? `HTTP ${status}` : '', statusText]
+        .filter(Boolean)
+        .join(' ') || '未知响应错误';
+}
+
+async function fetchWorldInfoDirect(name, ctx = getContext()) {
+    if (typeof fetch !== 'function') throw new Error('当前页面没有可用的 fetch 接口');
+    const headers = typeof ctx.getRequestHeaders === 'function'
+        ? ctx.getRequestHeaders()
+        : { 'Content-Type': 'application/json' };
+    const response = await fetch('/api/worldinfo/get', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ name }),
+        cache: 'no-cache',
+    });
+    if (!response.ok) throw new Error(readableWorldInfoResponseError(response));
+    return response.json();
+}
+
+async function loadWorldInfoCompat(name, ctx = getContext(), runtime = state.worldInfoRuntime || {}) {
+    const errors = [];
+    let emptyBook = null;
+    for (const loader of getWorldInfoLoaders(ctx, runtime)) {
+        try {
+            const raw = await loader.load(name);
+            const book = normalizeWorldBookPayload(raw);
+            if (!book) throw new Error('返回结果中没有 entries');
+            emptyBook ??= book;
+            if (extractWorldBookEntries(book, name).length) return book;
+        } catch (error) {
+            errors.push(`${loader.label}：${error?.message || error}`);
+        }
+    }
+
+    // Some forks expose loadWorldInfo but return a wrapper or an empty cache
+    // snapshot. The backend endpoint is stable across SillyTavern 1.14+ and is
+    // the final source of truth for the selected worldbook file.
+    try {
+        const raw = await fetchWorldInfoDirect(name, ctx);
+        const book = normalizeWorldBookPayload(raw);
+        if (!book) throw new Error('响应中没有 entries');
+        if (extractWorldBookEntries(book, name).length || !emptyBook) return book;
+    } catch (error) {
+        errors.push(`世界书接口：${error?.message || error}`);
+    }
+
+    if (emptyBook) return emptyBook;
+    throw new Error(errors.join('；') || '没有可用的世界书读取接口');
 }
 
 function getWorldEntrySelections() {
@@ -2151,17 +2212,16 @@ async function loadWorldEntryCatalog({ force = false } = {}) {
         renderWorldEntryPicker();
         const ctx = getContext();
         const runtime = await getWorldInfoRuntime();
-        const loadWorldInfo = getWorldInfoLoader(ctx, runtime);
         const descriptors = selectedWorldSourceDescriptors();
         const loaded = await Promise.all(descriptors.map(async descriptor => {
             try {
                 const book = descriptor.embedded
-                    ? state.embeddedBook
-                    : (loadWorldInfo ? await loadWorldInfo(descriptor.name) : null);
+                    ? normalizeWorldBookPayload(state.embeddedBook)
+                    : await loadWorldInfoCompat(descriptor.name, ctx, runtime);
                 if (!book) throw new Error('无法读取世界书');
                 return {
                     ...descriptor,
-                    entries: extractEntries(book, descriptor.label, descriptor.key),
+                    entries: extractWorldBookEntries(book, descriptor.label, descriptor.key),
                     error: '',
                 };
             } catch (error) {
@@ -2174,6 +2234,10 @@ async function loadWorldEntryCatalog({ force = false } = {}) {
             }
         }));
         state.worldEntryCatalog = new Map(loaded.map(source => [source.key, source]));
+        const failed = loaded.filter(source => source.error);
+        if (failed.length) {
+            notify('warning', `${failed.length} 本世界书读取失败：${failed.map(source => source.label).join('、')}`);
+        }
         const validKeys = new Set(loaded.map(source => source.key));
         if (state.worldEntryBookFilter !== 'all' && !validKeys.has(state.worldEntryBookFilter)) {
             state.worldEntryBookFilter = 'all';
@@ -2233,13 +2297,17 @@ function updateWorldEntrySelectionSummary() {
     if (state.worldEntryCatalog.size) {
         let total = 0;
         let selected = 0;
+        let failed = 0;
         for (const source of state.worldEntryCatalog.values()) {
             total += source.entries.length;
             selected += selectedWorldEntries(source.entries, source.key, selections).length;
+            if (source.error) failed += 1;
         }
-        summary.textContent = customCount
-            ? `自选 ${selected}/${total} 条`
-            : `全部已启用条目 · ${total} 条`;
+        summary.textContent = failed
+            ? `${failed} 本读取失败 · 点击重试`
+            : customCount
+                ? `自选 ${selected}/${total} 条`
+                : `全部已启用条目 · ${total} 条`;
         return;
     }
     summary.textContent = customCount ? `${customCount} 本使用自选条目` : '全部已启用条目';
@@ -2290,14 +2358,18 @@ function renderWorldEntryPicker() {
         .reduce((total, source) => total + source.entries.length, 0);
     const selectedEntries = [...state.worldEntryCatalog.values()]
         .reduce((total, source) => total + selectedEntryIdsForSource(source).size, 0);
-    meta.textContent = `已选 ${selectedEntries}/${totalEntries} 条 · 当前筛选 ${allRecords.length} 条`;
+    const failedSources = [...state.worldEntryCatalog.values()].filter(source => source.error);
+    meta.textContent = `已选 ${selectedEntries}/${totalEntries} 条 · 当前筛选 ${allRecords.length} 条`
+        + (failedSources.length ? ` · ${failedSources.length} 本读取失败` : '');
 
     if (!visibleRecords.length) {
         const empty = document.createElement('div');
         empty.className = 'pf-entry-picker-empty';
-        empty.textContent = state.worldEntryCatalog.size
-            ? '没有符合当前筛选条件的条目。'
-            : '没有可读取的世界书条目。';
+        empty.textContent = failedSources.length
+            ? `读取失败：${failedSources.map(source => `${source.label}（${source.error}）`).join('；')}`
+            : state.worldEntryCatalog.size
+                ? '没有符合当前筛选条件的条目。'
+                : '没有可读取的世界书条目。';
         list.appendChild(empty);
     } else {
         const grouped = new Map();
@@ -2325,7 +2397,7 @@ function renderWorldEntryPicker() {
             title.append(strong, count);
             const modes = document.createElement('div');
             modes.className = 'pf-entry-source-modes';
-            for (const [value, label] of [[WORLD_ENTRY_MODE_ALL, '全部'], [WORLD_ENTRY_MODE_CUSTOM, '自选']]) {
+            for (const [value, label] of [[WORLD_ENTRY_MODE_ALL, '全部已启用'], [WORLD_ENTRY_MODE_CUSTOM, '自选']]) {
                 const button = document.createElement('button');
                 button.type = 'button';
                 button.className = 'pf-mini-button' + (mode === value ? ' is-active' : '');
@@ -2354,6 +2426,7 @@ function renderWorldEntryPicker() {
                 const badges = document.createElement('span');
                 badges.className = 'pf-entry-badges';
                 if (record.entry.constant) badges.appendChild(createWorldEntryBadge('常驻', 'is-constant'));
+                if (record.entry.enabled === false) badges.appendChild(createWorldEntryBadge('已停用', 'is-disabled'));
                 if (record.entry.keys.length) {
                     badges.appendChild(createWorldEntryBadge(record.entry.keys.slice(0, 3).join(' / ')));
                 }
@@ -2418,35 +2491,6 @@ function closeWorldEntryPicker() {
     updateWorldEntrySelectionSummary();
 }
 
-function extractEntries(book, sourceName, sourceKey = worldBookSourceKey(sourceName)) {
-    if (!book || typeof book !== 'object') return [];
-    const raw = book.entries ?? book.data?.entries ?? [];
-    const entries = Array.isArray(raw)
-        ? raw.map((entry, index) => [String(index), entry])
-        : Object.entries(raw || {});
-
-    return entries
-        .filter(([, entry]) => entry && typeof entry === 'object')
-        .filter(([, entry]) => entry.enabled !== false && entry.disable !== true)
-        .map(([fallbackKey, entry], index) => ({
-            source: sourceName,
-            sourceKey,
-            entryId: createWorldEntryId(entry, fallbackKey, index),
-            index,
-            comment: String(entry.comment ?? entry.name ?? '').trim(),
-            keys: unique([
-                ...(Array.isArray(entry.key) ? entry.key : []),
-                ...(Array.isArray(entry.keys) ? entry.keys : []),
-                ...(Array.isArray(entry.keysecondary) ? entry.keysecondary : []),
-                ...(Array.isArray(entry.secondary_keys) ? entry.secondary_keys : []),
-            ]),
-            content: String(entry.content ?? '').trim(),
-            constant: Boolean(entry.constant),
-            order: Number(entry.order ?? entry.insertion_order ?? 0),
-        }))
-        .filter(entry => entry.content);
-}
-
 function promptCdata(value) {
     return '<![CDATA[' + String(value ?? '').replaceAll(']]>', ']]]]><![CDATA[>') + ']]>';
 }
@@ -2477,7 +2521,6 @@ function entryToText(entry, index) {
 async function collectWorldLore() {
     const ctx = getContext();
     const runtime = await getWorldInfoRuntime();
-    const loadWorldInfo = getWorldInfoLoader(ctx, runtime);
     const entries = [];
     const failures = [];
     let totalEntries = 0;
@@ -2485,10 +2528,10 @@ async function collectWorldLore() {
 
     for (const name of state.selectedWorldNames) {
         try {
-            const book = loadWorldInfo ? await loadWorldInfo(name) : null;
+            const book = await loadWorldInfoCompat(name, ctx, runtime);
             if (book) {
                 const sourceKey = worldBookSourceKey(name);
-                const sourceEntries = extractEntries(book, name, sourceKey);
+                const sourceEntries = extractWorldBookEntries(book, name, sourceKey);
                 totalEntries += sourceEntries.length;
                 entries.push(...selectedWorldEntries(sourceEntries, sourceKey, entrySelections));
             } else failures.push(name);
@@ -2500,7 +2543,7 @@ async function collectWorldLore() {
 
     if (state.embeddedBook) {
         const sourceKey = embeddedBookSourceKey(getEmbeddedBookIdentity());
-        const sourceEntries = extractEntries(state.embeddedBook, '角色卡内嵌 Character Book', sourceKey);
+        const sourceEntries = extractWorldBookEntries(state.embeddedBook, '角色卡内嵌 Character Book', sourceKey);
         totalEntries += sourceEntries.length;
         entries.push(...selectedWorldEntries(sourceEntries, sourceKey, entrySelections));
     }
