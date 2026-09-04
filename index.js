@@ -43,13 +43,24 @@ import {
     normalizeIndependentApiSettings,
     parseIndependentApiModels,
 } from './independent-api.js';
+import {
+    WORLD_ENTRY_MODE_ALL,
+    WORLD_ENTRY_MODE_CUSTOM,
+    compactWorldEntrySelection,
+    createWorldEntryId,
+    embeddedBookSourceKey,
+    normalizeWorldEntrySelections,
+    selectedWorldEntries,
+    worldBookSourceKey,
+} from './worldbook-selection.js';
 
 const EXTENSION_NAME = 'persona-forge';
 const DISPLAY_NAME = '嘎嘎人设生成器';
 const SETTINGS_KEY = 'personaForge';
-const VERSION = '0.9.0';
+const VERSION = '0.10.0';
 const FAB_ICON_URL = new URL('./icon.png', import.meta.url).href;
 const DEFAULT_FAB_SIZE = 65;
+const WORLD_ENTRY_PAGE_SIZE = 120;
 
 const state = {
     overlay: null,
@@ -62,6 +73,13 @@ const state = {
     personaWorldNames: [],
     selectedWorldNames: new Set(),
     embeddedBook: null,
+    worldEntryCatalog: new Map(),
+    worldEntrySearch: '',
+    worldEntryFilter: 'all',
+    worldEntryBookFilter: 'all',
+    worldEntryRenderLimit: WORLD_ENTRY_PAGE_SIZE,
+    loadingWorldEntries: false,
+    worldEntryLoadPromise: null,
     lastContextSignature: '',
     generating: false,
     generationEpoch: 0,
@@ -220,6 +238,7 @@ async function detectWorldBooks() {
             ? unique([...state.activeWorldNames, ...state.personaWorldNames])
             : state.activeWorldNames;
         state.selectedWorldNames = new Set(defaultNames);
+        invalidateWorldEntryCatalog();
         state.lastContextSignature = signature;
     }
 
@@ -256,6 +275,7 @@ function ensureSettings() {
         customTargetLength: LENGTH_PRESETS.standard.targetLength,
         sectionSelection: createDefaultSectionSelection(),
         customSectionPresets: [],
+        worldEntrySelections: {},
         apiMode: 'tavern',
         independentApi: normalizeIndependentApiSettings(),
     };
@@ -283,6 +303,7 @@ function ensureSettings() {
         ),
         sectionSelection: mergedSections,
         customSectionPresets: normalizeCustomSectionPresets(current.customSectionPresets),
+        worldEntrySelections: normalizeWorldEntrySelections(current.worldEntrySelections),
         apiMode: current.apiMode === 'independent' ? 'independent' : 'tavern',
         independentApi: normalizeIndependentApiSettings(current.independentApi),
     };
@@ -836,7 +857,7 @@ function createStaticUi() {
                         <small id="pf-book-count">0 个已选</small>
                     </summary>
                     <div class="pf-detail-body">
-                        <p class="pf-muted">默认勾选当前真正启用或绑定的世界书。生成时会完整读取所选世界书中已启用且有正文的条目，不自行截断；也不会读取当前聊天正文。</p>
+                        <p class="pf-muted">默认勾选当前真正启用或绑定的世界书，并完整读取其中已启用且有正文的条目；也可以进一步自选条目。插件不自行截断内容，也不会读取当前聊天正文。</p>
                         <div class="pf-book-toolbar">
                             <button class="pf-mini-button" type="button" id="pf-select-active">只选当前启用</button>
                             <button class="pf-mini-button" type="button" id="pf-select-all">全选</button>
@@ -844,10 +865,52 @@ function createStaticUi() {
                             <button class="pf-mini-button" type="button" id="pf-refresh">刷新识别</button>
                         </div>
                         <div id="pf-book-list" class="pf-book-list"></div>
+                        <div class="pf-entry-selection-bar">
+                            <div>
+                                <strong>条目读取范围</strong>
+                                <small id="pf-entry-selection-summary">全部已启用条目</small>
+                            </div>
+                            <button class="pf-mini-button" type="button" id="pf-open-entry-picker">选择条目</button>
+                        </div>
                         <div class="pf-inline-note" id="pf-embedded-note" hidden>✓ 当前角色卡还包含内嵌 Character Book，将自动读取。</div>
                         <div class="pf-inline-note" id="pf-persona-book-note" hidden>检测到当前 Persona 绑定的世界书，默认不勾选，避免沿用当前 User 身份。</div>
                     </div>
                 </details>
+
+                <div class="pf-entry-picker" id="pf-entry-picker" role="dialog" aria-modal="true" aria-labelledby="pf-entry-picker-title" hidden>
+                    <section class="pf-entry-picker-panel">
+                        <header class="pf-entry-picker-head">
+                            <div>
+                                <span class="pf-label-mini">世界书范围</span>
+                                <h3 id="pf-entry-picker-title">选择模型可以读取的条目</h3>
+                                <p id="pf-entry-picker-meta">正在读取所选世界书…</p>
+                            </div>
+                            <button class="pf-icon-button" id="pf-close-entry-picker" type="button" aria-label="关闭条目选择"><span class="pf-close-glyph" aria-hidden="true"></span></button>
+                        </header>
+                        <div class="pf-entry-picker-controls">
+                            <input class="pf-compact-control" id="pf-entry-search" type="search" autocomplete="off" placeholder="搜索标题、关键词或正文">
+                            <select class="pf-compact-control" id="pf-entry-book-filter" aria-label="按世界书筛选">
+                                <option value="all">全部所选世界书</option>
+                            </select>
+                            <div class="pf-entry-filter-row" role="group" aria-label="条目筛选">
+                                <button class="pf-mini-button is-active" type="button" data-entry-filter="all">全部</button>
+                                <button class="pf-mini-button" type="button" data-entry-filter="constant">仅常驻</button>
+                                <button class="pf-mini-button" type="button" data-entry-filter="selected">仅已选</button>
+                            </div>
+                            <div class="pf-entry-batch-row">
+                                <button class="pf-mini-button" type="button" id="pf-entry-select-filtered">全选筛选结果</button>
+                                <button class="pf-mini-button" type="button" id="pf-entry-clear-filtered">清空筛选结果</button>
+                                <button class="pf-mini-button" type="button" id="pf-entry-select-constant">只选常驻</button>
+                                <button class="pf-mini-button" type="button" id="pf-entry-reset-all">全部恢复默认</button>
+                            </div>
+                        </div>
+                        <div class="pf-entry-picker-list" id="pf-entry-picker-list"></div>
+                        <footer class="pf-entry-picker-footer">
+                            <button class="pf-mini-button pf-entry-load-more" type="button" id="pf-entry-load-more" hidden>显示更多条目</button>
+                            <button class="pf-primary-button pf-entry-picker-done" type="button" id="pf-finish-entry-picker">完成选择</button>
+                        </footer>
+                    </section>
+                </div>
 
                 <section class="pf-card pf-result-card" id="pf-result-card">
                     <div class="pf-section-head pf-result-head">
@@ -1488,7 +1551,10 @@ function bindUiEvents() {
     });
 
     document.addEventListener('keydown', event => {
-        if (event.key === 'Escape' && state.overlay?.classList.contains('is-open')) closePanel();
+        if (event.key !== 'Escape' || !state.overlay?.classList.contains('is-open')) return;
+        const entryPicker = state.overlay.querySelector('#pf-entry-picker');
+        if (entryPicker && !entryPicker.hidden) closeWorldEntryPicker();
+        else closePanel();
     });
 
     root.querySelectorAll('.pf-segment[data-mode]').forEach(button => {
@@ -1650,14 +1716,17 @@ function bindUiEvents() {
             ? unique([...state.activeWorldNames, ...state.personaWorldNames])
             : state.activeWorldNames;
         state.selectedWorldNames = new Set(names);
+        invalidateWorldEntryCatalog();
         renderWorldBookList();
     });
     root.querySelector('#pf-select-all')?.addEventListener('click', () => {
         state.selectedWorldNames = new Set(state.allWorldNames);
+        invalidateWorldEntryCatalog();
         renderWorldBookList();
     });
     root.querySelector('#pf-select-none')?.addEventListener('click', () => {
         state.selectedWorldNames.clear();
+        invalidateWorldEntryCatalog();
         renderWorldBookList();
     });
     root.querySelector('#pf-refresh')?.addEventListener('click', async () => {
@@ -1665,12 +1734,99 @@ function bindUiEvents() {
         await refreshContextUi(true);
         notify('success', '已重新识别角色与世界书。');
     });
+    root.querySelector('#pf-open-entry-picker')?.addEventListener('click', () => {
+        openWorldEntryPicker().catch(error => {
+            console.error(`[${DISPLAY_NAME}] Could not open the world entry picker.`, error);
+            notify('error', '读取世界书条目失败：' + (error?.message || error));
+        });
+    });
+    root.querySelector('#pf-close-entry-picker')?.addEventListener('click', closeWorldEntryPicker);
+    root.querySelector('#pf-finish-entry-picker')?.addEventListener('click', closeWorldEntryPicker);
+    root.querySelector('#pf-entry-picker')?.addEventListener('pointerdown', event => {
+        if (event.target === event.currentTarget) closeWorldEntryPicker();
+    });
+    root.querySelector('#pf-entry-search')?.addEventListener('input', event => {
+        state.worldEntrySearch = event.target.value;
+        state.worldEntryRenderLimit = WORLD_ENTRY_PAGE_SIZE;
+        renderWorldEntryPicker();
+    });
+    root.querySelector('#pf-entry-book-filter')?.addEventListener('change', event => {
+        state.worldEntryBookFilter = event.target.value || 'all';
+        state.worldEntryRenderLimit = WORLD_ENTRY_PAGE_SIZE;
+        renderWorldEntryPicker();
+    });
+    root.querySelectorAll('[data-entry-filter]').forEach(button => {
+        button.addEventListener('click', () => {
+            state.worldEntryFilter = button.dataset.entryFilter || 'all';
+            state.worldEntryRenderLimit = WORLD_ENTRY_PAGE_SIZE;
+            root.querySelectorAll('[data-entry-filter]').forEach(candidate => {
+                candidate.classList.toggle('is-active', candidate === button);
+            });
+            renderWorldEntryPicker();
+        });
+    });
+    root.querySelector('#pf-entry-select-filtered')?.addEventListener('click', () => {
+        applyWorldEntryBatch(filteredWorldEntryRecords(), true);
+    });
+    root.querySelector('#pf-entry-clear-filtered')?.addEventListener('click', () => {
+        applyWorldEntryBatch(filteredWorldEntryRecords(), false);
+    });
+    root.querySelector('#pf-entry-select-constant')?.addEventListener('click', () => {
+        for (const source of state.worldEntryCatalog.values()) {
+            if (state.worldEntryBookFilter !== 'all' && source.key !== state.worldEntryBookFilter) continue;
+            const selected = new Set(
+                source.entries.filter(entry => entry.constant).map(entry => String(entry.entryId)),
+            );
+            setWorldEntrySelection(source, selected);
+        }
+        state.worldEntryFilter = 'all';
+        root.querySelectorAll('[data-entry-filter]').forEach(button => {
+            button.classList.toggle('is-active', button.dataset.entryFilter === 'all');
+        });
+        renderWorldEntryPicker();
+        updateWorldEntrySelectionSummary();
+    });
+    root.querySelector('#pf-entry-reset-all')?.addEventListener('click', () => {
+        const settings = ensureSettings();
+        const selections = getWorldEntrySelections();
+        for (const source of state.worldEntryCatalog.values()) delete selections[source.key];
+        settings.worldEntrySelections = normalizeWorldEntrySelections(selections);
+        saveSettings();
+        renderWorldEntryPicker();
+        updateWorldEntrySelectionSummary();
+    });
+    root.querySelector('#pf-entry-picker-list')?.addEventListener('click', event => {
+        const button = event.target.closest('[data-entry-source-mode]');
+        if (!button) return;
+        const source = state.worldEntryCatalog.get(button.dataset.sourceKey);
+        if (!source) return;
+        setWorldEntrySourceMode(source, button.dataset.entrySourceMode);
+        renderWorldEntryPicker();
+        updateWorldEntrySelectionSummary();
+    });
+    root.querySelector('#pf-entry-picker-list')?.addEventListener('change', event => {
+        const checkbox = event.target.closest('input[data-entry-id][data-source-key]');
+        if (!checkbox) return;
+        const source = state.worldEntryCatalog.get(checkbox.dataset.sourceKey);
+        if (!source) return;
+        const selected = selectedEntryIdsForSource(source);
+        if (checkbox.checked) selected.add(checkbox.dataset.entryId);
+        else selected.delete(checkbox.dataset.entryId);
+        setWorldEntrySelection(source, selected);
+        renderWorldEntryPicker();
+        updateWorldEntrySelectionSummary();
+    });
+    root.querySelector('#pf-entry-load-more')?.addEventListener('click', () => {
+        state.worldEntryRenderLimit += WORLD_ENTRY_PAGE_SIZE;
+        renderWorldEntryPicker();
+    });
 }
 
 function setMode(mode) {
     const valid = ['random', 'directed', 'refine'].includes(mode) ? mode : 'random';
     const root = state.overlay;
     const previous = currentMode();
+    const previousWorldSelection = JSON.stringify([...state.selectedWorldNames]);
     root.querySelectorAll('.pf-segment[data-mode]').forEach(button => {
         const active = button.dataset.mode === valid;
         button.classList.toggle('is-active', active);
@@ -1684,6 +1840,9 @@ function setMode(mode) {
         for (const name of state.personaWorldNames) {
             if (!state.activeWorldNames.includes(name)) state.selectedWorldNames.delete(name);
         }
+    }
+    if (previousWorldSelection !== JSON.stringify([...state.selectedWorldNames])) {
+        invalidateWorldEntryCatalog();
     }
 
     updateModeUi(valid);
@@ -1786,6 +1945,7 @@ async function openPanel() {
 
 function closePanel() {
     if (!state.overlay) return;
+    closeWorldEntryPicker();
     state.overlay.classList.remove('is-open');
     state.overlay.setAttribute('aria-hidden', 'true');
     document.documentElement.classList.remove('pf-modal-open');
@@ -1798,7 +1958,10 @@ async function refreshContextUi(force = false) {
     const character = getCurrentCharacter(ctx);
     const persona = getCurrentPersonaContext(ctx);
 
-    if (force) state.worldInfoRuntime = null;
+    if (force) {
+        state.worldInfoRuntime = null;
+        invalidateWorldEntryCatalog();
+    }
     await detectWorldBooks();
 
     state.overlay.querySelector('#pf-character-name').textContent = getCharacterName(character);
@@ -1865,6 +2028,7 @@ function renderWorldBookList() {
             checkbox.checked = state.selectedWorldNames.has(name);
             checkbox.addEventListener('change', () => {
                 checkbox.checked ? state.selectedWorldNames.add(name) : state.selectedWorldNames.delete(name);
+                invalidateWorldEntryCatalog();
                 updateBookCount();
             });
 
@@ -1895,18 +2059,379 @@ function renderWorldBookList() {
 function updateBookCount() {
     const count = state.overlay?.querySelector('#pf-book-count');
     if (count) count.textContent = `${state.selectedWorldNames.size} 个已选`;
+    updateWorldEntrySelectionSummary();
 }
 
-function extractEntries(book, sourceName) {
+function getEmbeddedBookIdentity(character = getCurrentCharacter(getContext())) {
+    const data = characterData(character);
+    return String(
+        character?.avatar
+        || data?.avatar
+        || character?.filename
+        || data?.filename
+        || getCharacterName(character),
+    );
+}
+
+function selectedWorldSourceDescriptors() {
+    const sources = [...state.selectedWorldNames].map(name => ({
+        key: worldBookSourceKey(name),
+        label: name,
+        name,
+        embedded: false,
+    }));
+    if (state.embeddedBook) {
+        sources.push({
+            key: embeddedBookSourceKey(getEmbeddedBookIdentity()),
+            label: '角色卡内嵌 Character Book',
+            name: '',
+            embedded: true,
+        });
+    }
+    return sources;
+}
+
+function invalidateWorldEntryCatalog() {
+    state.worldEntryCatalog = new Map();
+    state.worldEntryBookFilter = 'all';
+    state.worldEntryRenderLimit = WORLD_ENTRY_PAGE_SIZE;
+    updateWorldEntrySelectionSummary();
+}
+
+function getWorldInfoLoader(ctx = getContext(), runtime = state.worldInfoRuntime || {}) {
+    if (typeof ctx.loadWorldInfo === 'function') return ctx.loadWorldInfo.bind(ctx);
+    if (typeof runtime.loadWorldInfo === 'function') return runtime.loadWorldInfo;
+    return null;
+}
+
+function getWorldEntrySelections() {
+    const settings = ensureSettings();
+    settings.worldEntrySelections = normalizeWorldEntrySelections(settings.worldEntrySelections);
+    return settings.worldEntrySelections;
+}
+
+function selectedEntryIdsForSource(source) {
+    return new Set(
+        selectedWorldEntries(source.entries, source.key, getWorldEntrySelections())
+            .map(entry => String(entry.entryId)),
+    );
+}
+
+function setWorldEntrySelection(source, selectedIds) {
+    const settings = ensureSettings();
+    const selections = getWorldEntrySelections();
+    const compact = compactWorldEntrySelection(source.entries, selectedIds);
+    if (compact.mode === WORLD_ENTRY_MODE_ALL) delete selections[source.key];
+    else selections[source.key] = compact;
+    settings.worldEntrySelections = normalizeWorldEntrySelections(selections);
+    saveSettings();
+}
+
+function setWorldEntrySourceMode(source, mode) {
+    const settings = ensureSettings();
+    const selections = getWorldEntrySelections();
+    if (mode === WORLD_ENTRY_MODE_CUSTOM) {
+        const current = selections[source.key];
+        selections[source.key] = current?.mode === WORLD_ENTRY_MODE_CUSTOM
+            ? current
+            : { mode: WORLD_ENTRY_MODE_CUSTOM, strategy: 'exclude', ids: [] };
+    } else {
+        delete selections[source.key];
+    }
+    settings.worldEntrySelections = normalizeWorldEntrySelections(selections);
+    saveSettings();
+}
+
+async function loadWorldEntryCatalog({ force = false } = {}) {
+    if (state.worldEntryLoadPromise) return state.worldEntryLoadPromise;
+    if (!force && state.worldEntryCatalog.size) return state.worldEntryCatalog;
+
+    const task = (async () => {
+        state.loadingWorldEntries = true;
+        renderWorldEntryPicker();
+        const ctx = getContext();
+        const runtime = await getWorldInfoRuntime();
+        const loadWorldInfo = getWorldInfoLoader(ctx, runtime);
+        const descriptors = selectedWorldSourceDescriptors();
+        const loaded = await Promise.all(descriptors.map(async descriptor => {
+            try {
+                const book = descriptor.embedded
+                    ? state.embeddedBook
+                    : (loadWorldInfo ? await loadWorldInfo(descriptor.name) : null);
+                if (!book) throw new Error('无法读取世界书');
+                return {
+                    ...descriptor,
+                    entries: extractEntries(book, descriptor.label, descriptor.key),
+                    error: '',
+                };
+            } catch (error) {
+                console.warn(`[${DISPLAY_NAME}] Failed to load entries for ${descriptor.label}`, error);
+                return {
+                    ...descriptor,
+                    entries: [],
+                    error: error?.message || String(error),
+                };
+            }
+        }));
+        state.worldEntryCatalog = new Map(loaded.map(source => [source.key, source]));
+        const validKeys = new Set(loaded.map(source => source.key));
+        if (state.worldEntryBookFilter !== 'all' && !validKeys.has(state.worldEntryBookFilter)) {
+            state.worldEntryBookFilter = 'all';
+        }
+        return state.worldEntryCatalog;
+    })();
+
+    state.worldEntryLoadPromise = task;
+    try {
+        return await task;
+    } finally {
+        state.loadingWorldEntries = false;
+        state.worldEntryLoadPromise = null;
+        renderWorldEntryPicker();
+        updateWorldEntrySelectionSummary();
+    }
+}
+
+function matchesWorldEntrySearch(entry, query) {
+    if (!query) return true;
+    const haystack = [entry.comment, ...entry.keys, entry.content]
+        .join('\n')
+        .toLocaleLowerCase();
+    return haystack.includes(query);
+}
+
+function filteredWorldEntryRecords({ ignoreSelectionFilter = false } = {}) {
+    const query = String(state.worldEntrySearch || '').trim().toLocaleLowerCase();
+    const records = [];
+    for (const source of state.worldEntryCatalog.values()) {
+        if (state.worldEntryBookFilter !== 'all' && source.key !== state.worldEntryBookFilter) continue;
+        const selectedIds = selectedEntryIdsForSource(source);
+        for (const entry of source.entries) {
+            const selected = selectedIds.has(String(entry.entryId));
+            if (!matchesWorldEntrySearch(entry, query)) continue;
+            if (state.worldEntryFilter === 'constant' && !entry.constant) continue;
+            if (!ignoreSelectionFilter && state.worldEntryFilter === 'selected' && !selected) continue;
+            records.push({ source, entry, selected });
+        }
+    }
+    return records;
+}
+
+function updateWorldEntrySelectionSummary() {
+    const summary = state.overlay?.querySelector('#pf-entry-selection-summary');
+    const button = state.overlay?.querySelector('#pf-open-entry-picker');
+    if (!summary) return;
+    const descriptors = selectedWorldSourceDescriptors();
+    if (button) button.disabled = descriptors.length === 0;
+    if (!descriptors.length) {
+        summary.textContent = '请先选择世界书';
+        return;
+    }
+
+    const selections = getWorldEntrySelections();
+    const customCount = descriptors.filter(source => selections[source.key]?.mode === WORLD_ENTRY_MODE_CUSTOM).length;
+    if (state.worldEntryCatalog.size) {
+        let total = 0;
+        let selected = 0;
+        for (const source of state.worldEntryCatalog.values()) {
+            total += source.entries.length;
+            selected += selectedWorldEntries(source.entries, source.key, selections).length;
+        }
+        summary.textContent = customCount
+            ? `自选 ${selected}/${total} 条`
+            : `全部已启用条目 · ${total} 条`;
+        return;
+    }
+    summary.textContent = customCount ? `${customCount} 本使用自选条目` : '全部已启用条目';
+}
+
+function createWorldEntryBadge(text, className = '') {
+    const badge = document.createElement('small');
+    badge.className = ['pf-entry-badge', className].filter(Boolean).join(' ');
+    badge.textContent = text;
+    return badge;
+}
+
+function renderWorldEntryPicker() {
+    const picker = state.overlay?.querySelector('#pf-entry-picker');
+    const list = state.overlay?.querySelector('#pf-entry-picker-list');
+    const meta = state.overlay?.querySelector('#pf-entry-picker-meta');
+    const bookFilter = state.overlay?.querySelector('#pf-entry-book-filter');
+    const loadMore = state.overlay?.querySelector('#pf-entry-load-more');
+    if (!picker || picker.hidden || !list || !meta || !bookFilter || !loadMore) return;
+
+    bookFilter.replaceChildren();
+    const allOption = document.createElement('option');
+    allOption.value = 'all';
+    allOption.textContent = '全部所选世界书';
+    bookFilter.appendChild(allOption);
+    for (const source of state.worldEntryCatalog.values()) {
+        const option = document.createElement('option');
+        option.value = source.key;
+        option.textContent = source.label;
+        bookFilter.appendChild(option);
+    }
+    bookFilter.value = state.worldEntryBookFilter;
+
+    list.replaceChildren();
+    if (state.loadingWorldEntries) {
+        meta.textContent = '正在读取所选世界书…';
+        const loading = document.createElement('div');
+        loading.className = 'pf-entry-picker-empty';
+        loading.textContent = '正在整理条目，请稍候。';
+        list.appendChild(loading);
+        loadMore.hidden = true;
+        return;
+    }
+
+    const allRecords = filteredWorldEntryRecords();
+    const visibleRecords = allRecords.slice(0, state.worldEntryRenderLimit);
+    const totalEntries = [...state.worldEntryCatalog.values()]
+        .reduce((total, source) => total + source.entries.length, 0);
+    const selectedEntries = [...state.worldEntryCatalog.values()]
+        .reduce((total, source) => total + selectedEntryIdsForSource(source).size, 0);
+    meta.textContent = `已选 ${selectedEntries}/${totalEntries} 条 · 当前筛选 ${allRecords.length} 条`;
+
+    if (!visibleRecords.length) {
+        const empty = document.createElement('div');
+        empty.className = 'pf-entry-picker-empty';
+        empty.textContent = state.worldEntryCatalog.size
+            ? '没有符合当前筛选条件的条目。'
+            : '没有可读取的世界书条目。';
+        list.appendChild(empty);
+    } else {
+        const grouped = new Map();
+        for (const record of visibleRecords) {
+            if (!grouped.has(record.source.key)) grouped.set(record.source.key, []);
+            grouped.get(record.source.key).push(record);
+        }
+        const selections = getWorldEntrySelections();
+        for (const [sourceKey, records] of grouped) {
+            const source = records[0].source;
+            const sourceSelectedCount = selectedEntryIdsForSource(source).size;
+            const mode = selections[sourceKey]?.mode === WORLD_ENTRY_MODE_CUSTOM
+                ? WORLD_ENTRY_MODE_CUSTOM
+                : WORLD_ENTRY_MODE_ALL;
+            const group = document.createElement('section');
+            group.className = 'pf-entry-source';
+
+            const head = document.createElement('div');
+            head.className = 'pf-entry-source-head';
+            const title = document.createElement('div');
+            const strong = document.createElement('strong');
+            strong.textContent = source.label;
+            const count = document.createElement('small');
+            count.textContent = `${sourceSelectedCount}/${source.entries.length} 条`;
+            title.append(strong, count);
+            const modes = document.createElement('div');
+            modes.className = 'pf-entry-source-modes';
+            for (const [value, label] of [[WORLD_ENTRY_MODE_ALL, '全部'], [WORLD_ENTRY_MODE_CUSTOM, '自选']]) {
+                const button = document.createElement('button');
+                button.type = 'button';
+                button.className = 'pf-mini-button' + (mode === value ? ' is-active' : '');
+                button.textContent = label;
+                button.dataset.entrySourceMode = value;
+                button.dataset.sourceKey = sourceKey;
+                modes.appendChild(button);
+            }
+            head.append(title, modes);
+            group.appendChild(head);
+
+            const entries = document.createElement('div');
+            entries.className = 'pf-entry-source-list';
+            for (const record of records) {
+                const label = document.createElement('label');
+                label.className = 'pf-entry-item';
+                const checkbox = document.createElement('input');
+                checkbox.type = 'checkbox';
+                checkbox.checked = record.selected;
+                checkbox.dataset.sourceKey = sourceKey;
+                checkbox.dataset.entryId = String(record.entry.entryId);
+                const body = document.createElement('span');
+                body.className = 'pf-entry-item-body';
+                const name = document.createElement('strong');
+                name.textContent = record.entry.comment || `未命名条目 ${record.entry.index + 1}`;
+                const badges = document.createElement('span');
+                badges.className = 'pf-entry-badges';
+                if (record.entry.constant) badges.appendChild(createWorldEntryBadge('常驻', 'is-constant'));
+                if (record.entry.keys.length) {
+                    badges.appendChild(createWorldEntryBadge(record.entry.keys.slice(0, 3).join(' / ')));
+                }
+                const preview = document.createElement('small');
+                preview.className = 'pf-entry-preview';
+                preview.textContent = record.entry.content.replace(/\s+/g, ' ').slice(0, 150);
+                body.append(name, badges, preview);
+                label.append(checkbox, body);
+                entries.appendChild(label);
+            }
+            group.appendChild(entries);
+            list.appendChild(group);
+        }
+    }
+
+    loadMore.hidden = allRecords.length <= visibleRecords.length;
+    if (!loadMore.hidden) {
+        loadMore.textContent = `再显示 ${Math.min(WORLD_ENTRY_PAGE_SIZE, allRecords.length - visibleRecords.length)} 条`;
+    }
+}
+
+function applyWorldEntryBatch(records, checked) {
+    const bySource = new Map();
+    for (const record of records) {
+        if (!bySource.has(record.source.key)) bySource.set(record.source.key, { source: record.source, ids: [] });
+        bySource.get(record.source.key).ids.push(String(record.entry.entryId));
+    }
+    for (const { source, ids } of bySource.values()) {
+        const selected = selectedEntryIdsForSource(source);
+        for (const id of ids) checked ? selected.add(id) : selected.delete(id);
+        setWorldEntrySelection(source, selected);
+    }
+    state.worldEntryRenderLimit = WORLD_ENTRY_PAGE_SIZE;
+    renderWorldEntryPicker();
+    updateWorldEntrySelectionSummary();
+}
+
+async function openWorldEntryPicker() {
+    const picker = state.overlay?.querySelector('#pf-entry-picker');
+    if (!picker) return;
+    if (!selectedWorldSourceDescriptors().length) {
+        notify('info', '请先选择至少一本世界书。');
+        return;
+    }
+    state.worldEntrySearch = '';
+    state.worldEntryFilter = 'all';
+    state.worldEntryBookFilter = 'all';
+    state.worldEntryRenderLimit = WORLD_ENTRY_PAGE_SIZE;
+    const search = state.overlay.querySelector('#pf-entry-search');
+    if (search) search.value = '';
+    state.overlay.querySelectorAll('[data-entry-filter]').forEach(button => {
+        button.classList.toggle('is-active', button.dataset.entryFilter === 'all');
+    });
+    picker.hidden = false;
+    renderWorldEntryPicker();
+    await loadWorldEntryCatalog({ force: true });
+}
+
+function closeWorldEntryPicker() {
+    const picker = state.overlay?.querySelector('#pf-entry-picker');
+    if (picker) picker.hidden = true;
+    updateWorldEntrySelectionSummary();
+}
+
+function extractEntries(book, sourceName, sourceKey = worldBookSourceKey(sourceName)) {
     if (!book || typeof book !== 'object') return [];
     const raw = book.entries ?? book.data?.entries ?? [];
-    const entries = Array.isArray(raw) ? raw : Object.values(raw || {});
+    const entries = Array.isArray(raw)
+        ? raw.map((entry, index) => [String(index), entry])
+        : Object.entries(raw || {});
 
     return entries
-        .filter(entry => entry && typeof entry === 'object')
-        .filter(entry => entry.enabled !== false && entry.disable !== true)
-        .map((entry, index) => ({
+        .filter(([, entry]) => entry && typeof entry === 'object')
+        .filter(([, entry]) => entry.enabled !== false && entry.disable !== true)
+        .map(([fallbackKey, entry], index) => ({
             source: sourceName,
+            sourceKey,
+            entryId: createWorldEntryId(entry, fallbackKey, index),
             index,
             comment: String(entry.comment ?? entry.name ?? '').trim(),
             keys: unique([
@@ -1952,17 +2477,21 @@ function entryToText(entry, index) {
 async function collectWorldLore() {
     const ctx = getContext();
     const runtime = await getWorldInfoRuntime();
-    const loadWorldInfo = typeof ctx.loadWorldInfo === 'function'
-        ? ctx.loadWorldInfo.bind(ctx)
-        : (typeof runtime.loadWorldInfo === 'function' ? runtime.loadWorldInfo : null);
+    const loadWorldInfo = getWorldInfoLoader(ctx, runtime);
     const entries = [];
     const failures = [];
+    let totalEntries = 0;
+    const entrySelections = getWorldEntrySelections();
 
     for (const name of state.selectedWorldNames) {
         try {
             const book = loadWorldInfo ? await loadWorldInfo(name) : null;
-            if (book) entries.push(...extractEntries(book, name));
-            else failures.push(name);
+            if (book) {
+                const sourceKey = worldBookSourceKey(name);
+                const sourceEntries = extractEntries(book, name, sourceKey);
+                totalEntries += sourceEntries.length;
+                entries.push(...selectedWorldEntries(sourceEntries, sourceKey, entrySelections));
+            } else failures.push(name);
         } catch (error) {
             console.warn(`[${DISPLAY_NAME}] Failed to load World Info: ${name}`, error);
             failures.push(name);
@@ -1970,7 +2499,10 @@ async function collectWorldLore() {
     }
 
     if (state.embeddedBook) {
-        entries.push(...extractEntries(state.embeddedBook, '角色卡内嵌 Character Book'));
+        const sourceKey = embeddedBookSourceKey(getEmbeddedBookIdentity());
+        const sourceEntries = extractEntries(state.embeddedBook, '角色卡内嵌 Character Book', sourceKey);
+        totalEntries += sourceEntries.length;
+        entries.push(...selectedWorldEntries(sourceEntries, sourceKey, entrySelections));
     }
 
     const characterName = getCharacterName(getCurrentCharacter(ctx));
@@ -1987,7 +2519,7 @@ async function collectWorldLore() {
 
     return {
         text,
-        totalEntries: entries.length,
+        totalEntries,
         includedEntries: entries.length,
         failures,
         chars: normalizedEntries.reduce((total, entry) => total + entry.content.length, 0),
@@ -2730,7 +3262,9 @@ async function generatePersona() {
         state.resultView = 'persona';
 
         const notes = [];
-        notes.push('已完整读取 ' + lore.includedEntries + ' 条世界书内容（' + lore.chars + ' 字）');
+        notes.push(lore.includedEntries === lore.totalEntries
+            ? '已完整读取 ' + lore.includedEntries + ' 条世界书内容（' + lore.chars + ' 字）'
+            : '已按自选范围读取 ' + lore.includedEntries + '/' + lore.totalEntries + ' 条世界书内容（' + lore.chars + ' 字）');
         if (openingGreeting) notes.push('已参考角色开场白');
         if (lore.failures.length) notes.push(lore.failures.length + ' 个世界书读取失败');
 
