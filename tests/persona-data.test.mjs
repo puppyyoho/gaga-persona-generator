@@ -121,6 +121,11 @@ assert.match(buildPersonaSystemPrompt(), /持续变化的地位协商/);
 assert.match(buildPersonaSystemPrompt(), /保留发展接口/);
 assert.match(buildPersonaSystemPrompt(), /绝对禁止使用“不是……而是……”/);
 assert.match(buildPersonaSystemPrompt(), /绝对禁止使用破折号/);
+assert.match(buildPersonaSystemPrompt(), /<entity_integrity>/);
+assert.match(buildPersonaSystemPrompt(), /不得创造承担相同位置的新人物/);
+assert.match(buildPersonaSystemPrompt(), /不得输出世界书摘要/);
+assert.match(buildPersonaSystemPrompt(), /世界事实、人物限制或机会、人物策略或习惯、代价或人际影响/);
+assert.match(buildPersonaSystemPrompt(), /<silent_workflow>/);
 assert.doesNotMatch(buildPersonaSystemPrompt(), /change_log/);
 assert.match(buildPersonaRefinementSystemPrompt(), /change_log\.before 用于核对原文/);
 assert.match(buildPersonaGenerationPrompt({ options, characterContext: '', loreText: '' }), /不得使用先否定后肯定的对照句式/);
@@ -162,6 +167,29 @@ assert.match(refinementPrompt, /保留职业与关系，只优化表达/);
 assert.match(refinementPrompt, /change_log 是界面对比所需的隐藏数据/);
 assert.match(refinementPrompt, /最多返回 12 项/);
 assert.match(refinementPrompt, /新增、修改、删除或保留/);
+
+const relationshipPrompt = buildPersonaGenerationPrompt({
+    options: {
+        ...options,
+        sections: [
+            ...options.sections,
+            { id: 'partner', label: '当前伴侣' },
+        ],
+    },
+    characterName: '角色A',
+    characterContext: '角色A是城堡的主人。',
+    loreText: '[[PF_NAME]]的丈夫是角色A。',
+});
+assert.ok(
+    relationshipPrompt.indexOf('<source_material>') < relationshipPrompt.indexOf('<task>'),
+    'Long source material should appear before the task instructions',
+);
+assert.match(relationshipPrompt, /<worldbooks>[\s\S]*<document index="1">/);
+assert.match(relationshipPrompt, /<document_content>[\s\S]*\[\[PF_NAME\]\]的丈夫是角色A/);
+assert.match(relationshipPrompt, /当前角色指资料中的“角色A”/);
+assert.match(relationshipPrompt, /不得另造重复伴侣/);
+assert.match(relationshipPrompt, /不得写成背景摘要/);
+assert.match(relationshipPrompt, /优先继承资料中已经确定的伴侣/);
 const greetingRefinementPrompt = buildPersonaRefinementPrompt({
     options: { ...refineOptions, referenceGreeting: true },
     personaName: '当前U',

@@ -80,4 +80,3 @@ test('parses standard and provider-specific model list shapes', () => {
     assert.equal(parseIndependentApiModels({ data: manyModels }).length, manyModels.length);
     assert.equal(buildIndependentApiModelsUrl('https://example.test/v1/chat/completions'), 'https://example.test/v1/models');
 });
-

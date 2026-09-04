@@ -130,4 +130,3 @@ export function buildIndependentApiModelsUrl(endpoint) {
     const base = normalizeIndependentApiUrl(endpoint);
     return base ? `${base}/models` : '';
 }
-
